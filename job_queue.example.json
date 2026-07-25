@@ -1,0 +1,25 @@
+{
+  "jobs": [
+    {
+      "id": "2026-01-01-example-0",
+      "date": "2026-01-01",
+      "company": "Example Co",
+      "role": "Software Engineer",
+      "coverage": "~85%",
+      "status": "resume_ready",
+      "url": "https://boards.greenhouse.io/example/jobs/1234567",
+      "notes": "agent: strong fit off the backend archetype",
+      "pdf": "ExampleCo/Name_ExampleCo_Software_Engineer_Resume.pdf"
+    },
+    {
+      "id": "2026-01-01-example-1",
+      "date": "2026-01-01",
+      "company": "Another Co",
+      "role": "",
+      "coverage": "",
+      "status": "queued",
+      "url": "https://job-boards.greenhouse.io/anotherco/jobs/7654321",
+      "notes": ""
+    }
+  ]
+}

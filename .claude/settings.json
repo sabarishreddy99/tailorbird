@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 agent/run.py:*)",
+      "Bash(python3 agent/schedule.py:*)",
+      "Bash(python3 agent/screen.py:*)",
+      "Bash(python3 agent/ats.py:*)",
+      "Bash(python3 agent/report.py:*)",
+      "Bash(python3 tracker/tracker.py:*)",
+      "Bash(python3 tracker/update_queue.py:*)",
+      "Bash(python3 resumes/_assets/build_resume.py:*)",
+      "Bash(curl -sL:*)",
+      "Bash(curl -s:*)",
+      "Bash(mkdir -p:*)",
+      "Bash(mv:*)",
+      "Bash(qlmanage:*)",
+      "Read(//tmp/**)",
+      "Edit(resumes/**)",
+      "Edit(resumes/_index/LIBRARY.md)"
+    ]
+  }
+}

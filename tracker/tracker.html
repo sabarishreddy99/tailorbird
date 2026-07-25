@@ -1,0 +1,1829 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jaya's Job Tracker</title>
+<style>
+  :root {
+    /* Editorial ledger: warm paper, ink, one forest-green accent. */
+    --bg: #f4f0e7; --panel: #fffdf8; --ink: #211e18; --muted: #776f62;
+    --line: #e3dccd; --accent: #2f6f4e; --accent-soft: #e8f0e9;
+    --warn: #9a5b18; --danger: #9a331f; --radius: 11px;
+    /* Type: an editorial serif for the masthead + section labels, a refined
+       sans for the body, monospace for data (dates, URLs, coverage, logs).
+       macOS-native stacks, so nothing depends on the network. */
+    --font-display: "Iowan Old Style", "Charter", "Palatino Linotype", Palatino, Georgia, serif;
+    --font-body: "Avenir Next", "Segoe UI", ui-sans-serif, -apple-system, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    --shadow-sm: 0 1px 2px rgba(60,50,30,.05), 0 1px 1px rgba(60,50,30,.04);
+    --shadow-md: 0 6px 20px rgba(60,50,30,.10), 0 2px 6px rgba(60,50,30,.06);
+    --shadow-lg: 0 18px 46px rgba(45,38,22,.20);
+    /* Status palette. Drives the whole-row tint, the left rail, and the
+       select text, so one colour means one thing everywhere. */
+    --c-queued: #2563eb;      /* blue   */
+    --c-review: #be185d;      /* magenta - needs review */
+    --c-resume: #c2670a;      /* orange */
+    --c-applied: #2f7d4f;     /* green  */
+    --c-screen: #0e7490;      /* teal   */
+    --c-interview: #7c3aed;   /* purple */
+    --c-offer: #15803d;       /* strong green */
+    --c-bad: #b3271a;         /* red    */
+    /* How strongly the status hue washes a row, at rest and when active.
+       Themes override these two numbers instead of restating the rules, so
+       hover and selection can never lose a specificity race with a theme. */
+    --tint: 10%; --tint-hi: 19%;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17150f; --panel: #201d15; --ink: #ece7db; --muted: #9c9484;
+      --line: #342f22; --accent: #85c8a2; --accent-soft: #202a20;
+      --warn: #d99b52; --danger: #e08a76;
+      --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+      --shadow-md: 0 8px 24px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.4);
+      --shadow-lg: 0 20px 50px rgba(0,0,0,.6);
+      --c-queued: #6ea8fe; --c-review: #f472b6; --c-resume: #e0a458; --c-applied: #6fbf8f;
+      --c-screen: #5ec4dd; --c-interview: #b795f5; --c-offer: #7ee2a8;
+      --c-bad: #e08076;
+      --tint: 18%; --tint-hi: 32%;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17150f; --panel: #201d15; --ink: #ece7db; --muted: #9c9484;
+    --line: #342f22; --accent: #85c8a2; --accent-soft: #202a20;
+    --warn: #d99b52; --danger: #e08a76;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+    --shadow-md: 0 8px 24px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.4);
+    --shadow-lg: 0 20px 50px rgba(0,0,0,.6);
+    --c-queued: #6ea8fe; --c-review: #f472b6; --c-resume: #e0a458; --c-applied: #6fbf8f;
+    --c-screen: #5ec4dd; --c-interview: #b795f5; --c-offer: #7ee2a8;
+    --c-bad: #e08076;
+    --tint: 18%; --tint-hi: 32%;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f0e7; --panel: #fffdf8; --ink: #211e18; --muted: #776f62;
+    --line: #e3dccd; --accent: #2f6f4e; --accent-soft: #e8f0e9;
+    --warn: #9a5b18; --danger: #9a331f;
+    --shadow-sm: 0 1px 2px rgba(60,50,30,.05), 0 1px 1px rgba(60,50,30,.04);
+    --shadow-md: 0 6px 20px rgba(60,50,30,.10), 0 2px 6px rgba(60,50,30,.06);
+    --shadow-lg: 0 18px 46px rgba(45,38,22,.20);
+    --c-queued: #2563eb; --c-review: #be185d; --c-resume: #c2670a; --c-applied: #2f7d4f;
+    --c-screen: #0e7490; --c-interview: #7c3aed; --c-offer: #15803d;
+    --c-bad: #b3271a;
+    --tint: 10%; --tint-hi: 19%;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 22px 20px 40px; }
+
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  h1 { font-size: 21px; margin: 0; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 13px; }
+  .head-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+  .saved-dot { font-size: 12px; color: var(--muted); }
+  .saved-dot.on { color: var(--accent); }
+  .saved-dot.stale { color: var(--warn); font-weight: 600; text-decoration: underline; cursor: pointer; }
+
+  .add { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; margin-bottom: 14px; }
+  .add-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-start; }
+  input, select, textarea, button {
+    font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px;
+  }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  #newUrl { flex: 1 1 340px; resize: vertical; min-height: 38px; max-height: 200px; line-height: 1.4; }
+  #newCompany, #newRole { flex: 0 1 170px; }
+  button.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; cursor: pointer; }
+  button.primary:hover { filter: brightness(1.08); }
+  button.ghost { cursor: pointer; color: var(--muted); }
+  button.ghost:hover { color: var(--ink); }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 7px; }
+
+  .stats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+  .chip {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel); color: var(--muted); cursor: pointer;
+  }
+  .chip.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .chip b { color: var(--ink); font-weight: 600; }
+  /* "of N" tail: the whole-file number, shown only while filters narrow it. */
+  .chip i { font-style: normal; opacity: .6; font-size: 11px; }
+  .chip.zero { opacity: .4; }        /* nothing behind this status right now */
+  /* Chips carry the same hue as the rows they filter, so the stat bar
+     doubles as the colour legend. */
+  .chip[data-st] b { color: var(--st-c); }
+  .chip[data-st].active {
+    background: color-mix(in srgb, var(--st-c) 14%, transparent);
+    color: var(--st-c); border-color: var(--st-c);
+  }
+
+  .toolbar { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
+  .agentbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px 12px; margin-bottom: 12px; }
+  .agentbar .num { width: 52px; }
+  .agentbar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .agentbar .dot.running { background: var(--c-offer); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .agentbar .banner { color: var(--muted); font-size: 13px; }
+  .agentbar .banner b { color: var(--ink); }
+  .agentbar .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
+  .agentbar .rev-link { color: var(--c-review); font-weight: 600; cursor: pointer; }
+  .sched summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  .sched[open] summary { color: var(--ink); }
+  .sched .body { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .sched .body input[type=text] { width: 190px; }
+  .rowact { display: flex; gap: 4px; }
+  .rowact button { font-size: 11px; padding: 2px 6px; border-radius: 5px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--muted); }
+  .rowact button.go { color: var(--c-queued); border-color: var(--c-queued); }
+  .rowact button.no { color: var(--c-bad); border-color: var(--c-bad); }
+  #search { flex: 1 1 240px; }
+  #search.set { border-color: var(--accent); }
+  .count { color: var(--muted); font-size: 12px; margin-left: auto; white-space: nowrap; }
+
+  /* The table scrolls inside its own box so the header and the filter row
+     can stay pinned while 100+ rows go by. */
+  .tablewrap {
+    overflow: auto; border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--panel); max-height: calc(100vh - 250px); min-height: 320px;
+  }
+  /* Fixed layout: column widths come from the colgroup and never depend on
+     content, so nothing reflows or jumps sideways while you type in a cell. */
+  table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 1080px; table-layout: fixed; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th {
+    position: sticky; top: 0; z-index: 3; background: var(--panel);
+    font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); font-weight: 600; white-space: nowrap; user-select: none;
+  }
+  /* Fixed height on row one so row two's sticky offset is exact and the two
+     never leave a gap the rows can scroll through. */
+  thead tr:first-child th { height: 34px; padding-top: 6px; padding-bottom: 6px; }
+  thead tr.filters th {
+    top: 34px; z-index: 2; padding: 5px 6px; text-transform: none;
+    letter-spacing: 0; border-bottom: 2px solid var(--line);
+  }
+  thead th.sortable { cursor: pointer; }
+  thead th.sortable:hover { color: var(--ink); }
+  th .arrow { opacity: .35; font-size: 10px; }
+  th.sorted { color: var(--accent); }
+  th.sorted .arrow { opacity: 1; }
+
+  /* Filter controls sit flush in their header cell and stay quiet until used. */
+  .fx { width: 100%; padding: 4px 6px; font-size: 12px; background: var(--bg); border-color: var(--line); }
+  .fx.set { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .fx-date { display: flex; flex-direction: column; gap: 4px; }
+
+  /* Status filter: a native <details> popover with one checkbox per status. */
+  details.dd { position: relative; }
+  details.dd > summary {
+    list-style: none; cursor: pointer; font-size: 12px; padding: 4px 6px;
+    border: 1px solid var(--line); border-radius: 6px; background: var(--bg);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  details.dd > summary::-webkit-details-marker { display: none; }
+  details.dd.set > summary { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  details.dd .menu {
+    position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 170px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.14); padding: 6px;
+  }
+  details.dd .menu label {
+    display: flex; align-items: center; gap: 7px; padding: 4px 6px;
+    font-size: 13px; border-radius: 4px; cursor: pointer; text-transform: none; letter-spacing: 0;
+  }
+  details.dd .menu label:hover { background: var(--accent-soft); }
+  details.dd .menu label span { color: var(--st-c); font-weight: 600; }
+  details.dd .menu .dd-actions { border-top: 1px solid var(--line); margin-top: 5px; padding-top: 5px; display: flex; gap: 6px; }
+  details.dd .menu .dd-actions button { font-size: 12px; padding: 3px 8px; }
+
+  /* Every row is exactly --row tall. Nothing in a cell is allowed to grow the
+     row, so the table scans as an even grid and scroll distance is uniform. */
+  :root { --row: 36px; }
+  tbody td {
+    height: var(--row); padding: 0 8px; vertical-align: middle;
+    overflow: hidden; white-space: nowrap;
+  }
+  tbody tr { height: var(--row); scroll-margin-top: 76px; scroll-margin-bottom: 8px; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.company { font-weight: 600; }
+  td.pick { padding-right: 0; }
+  td.pick input { width: 15px; height: 15px; cursor: pointer; }
+
+  /* Whole-row status colour. Hue comes from --st-c, set per status below,
+     so the tint, the left rail, and the select text can never disagree. */
+  [data-st="queued"]       { --st-c: var(--c-queued); }
+  [data-st="needs_review"] { --st-c: var(--c-review); }
+  [data-st="resume_ready"] { --st-c: var(--c-resume); }
+  [data-st="applied"]      { --st-c: var(--c-applied); }
+  [data-st="screen"]       { --st-c: var(--c-screen); }
+  [data-st="interviewing"] { --st-c: var(--c-interview); }
+  [data-st="offer"]        { --st-c: var(--c-offer); }
+  [data-st="rejected"]     { --st-c: var(--c-bad); }
+  [data-st="dropped"]      { --st-c: var(--c-bad); }
+
+  /* One background rule for every state. Hover, focus, and selection just
+     move --tint or --st-c on the row and let it inherit down to the cells. */
+  tr[data-st] td { background: color-mix(in srgb, var(--st-c) var(--tint), transparent); }
+  tbody tr:hover, tbody tr:focus-within { --tint: var(--tint-hi); }
+  tbody tr.sel { --st-c: var(--accent); --tint: var(--tint-hi); }
+
+  /* Left rail: inset shadow rather than a border, so nothing shifts. */
+  tr[data-st] td:first-child { box-shadow: inset 3px 0 0 var(--st-c); }
+  tr[data-st="dropped"] td, tr[data-st="rejected"] td { opacity: .72; }
+  tr[data-st="dropped"]:hover td, tr[data-st="rejected"]:hover td,
+  tr[data-st="dropped"]:focus-within td, tr[data-st="rejected"]:focus-within td { opacity: 1; }
+  tr[data-st="offer"] td.company { font-weight: 700; }
+
+  /* Per-row save feedback, so you can see which row landed without
+     hunting for the one status line up in the header. */
+  tr.saving td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+  tr.saved  td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
+  /* Inputs go transparent so each row reads as one solid band, and only
+     surface their chrome on hover or focus. */
+  /* Checkboxes are excluded: they need their native background to render. */
+  td input:not([type="checkbox"]), td select, td textarea {
+    width: 100%; height: 28px; background: transparent; border-color: transparent;
+    padding: 3px 6px; text-overflow: ellipsis;
+  }
+  td input:not([type="checkbox"]):hover, td select:hover, td textarea:hover { border-color: var(--line); }
+  td input:not([type="checkbox"]):focus, td select:focus, td textarea:focus { background: var(--panel); border-color: var(--accent); }
+  td select { color: var(--st-c); font-weight: 600; }
+
+  /* Notes stays one line tall so it cannot stretch its row. On focus it lifts
+     out of the flow as an overlay, so you get the full text to edit without
+     any row above or below moving. */
+  /* overflow must stay visible here or the focused overlay gets clipped back
+     to the cell it is trying to escape. Safe: the textarea is width-locked. */
+  td.notes { position: relative; overflow: visible; }
+  td textarea {
+    resize: none; overflow: hidden; white-space: nowrap;
+    font-size: 13px; line-height: 20px; color: var(--muted);
+  }
+  td.notes textarea:focus {
+    position: absolute; left: 4px; right: 4px; top: 3px; width: auto;
+    height: auto; min-height: 104px; z-index: 12;
+    white-space: pre-wrap; overflow: auto; resize: vertical;
+    color: var(--ink); box-shadow: 0 10px 28px rgba(0,0,0,.22);
+  }
+  td.date input { font-size: 13px; color: var(--muted); }
+  td.date.is-today input { color: var(--accent); font-weight: 700; }
+  td.cov input { font-size: 13px; color: var(--muted); text-align: right; }
+
+  a.jd {
+    color: var(--accent); text-decoration: none; font-size: 13px;
+    display: inline-block; max-width: 92px; overflow: hidden;
+    text-overflow: ellipsis; vertical-align: middle;
+  }
+  a.jd:hover { text-decoration: underline; }
+  td.jd-cell { white-space: nowrap; }
+  td.jd-cell > * { vertical-align: middle; }
+  button.mini {
+    font-size: 12px; padding: 1px 5px; margin-left: 4px; cursor: pointer; line-height: 18px;
+    color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 5px;
+  }
+  button.mini:hover { color: var(--ink); border-color: var(--muted); }
+  button.mini.ok { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  .del { color: var(--muted); background: none; border: 0; cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 6px; }
+  .del:hover { color: var(--danger); }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+
+  /* Bulk bar: only exists while rows are ticked. The [hidden] rule is required
+     because the display below would otherwise beat the attribute. */
+  .bulk[hidden] { display: none; }
+  .bulk {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    background: var(--accent-soft); border: 1px solid var(--accent);
+    border-radius: var(--radius); padding: 8px 12px; margin-bottom: 10px;
+  }
+  .bulk b { color: var(--accent); }
+  .bulk select, .bulk button { font-size: 13px; padding: 5px 9px; }
+  .bulk .danger { color: var(--danger); border-color: var(--danger); cursor: pointer; }
+
+  /* Undo toast, so deleting never needs a confirm dialog. */
+  .toast {
+    position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 999px;
+    font-size: 13px; display: flex; gap: 12px; align-items: center; z-index: 50;
+    box-shadow: 0 6px 24px rgba(0,0,0,.25);
+  }
+  .toast button { background: none; border: 0; color: var(--bg); font-weight: 700; text-decoration: underline; cursor: pointer; padding: 0; }
+
+  footer { margin-top: 14px; color: var(--muted); font-size: 12px; }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 11px; font-family: inherit; }
+  code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+  /* Tabs + Logs view */
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+  .tab { background: transparent; border: none; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 8px 15px; cursor: pointer; font-size: 14px; }
+  .tab.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  .logbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .logbar .live { font-size: 12px; color: var(--muted); }
+  .logview { display: grid; grid-template-columns: 1fr 280px; gap: 16px; }
+  @media (max-width: 820px) { .logview { grid-template-columns: 1fr; } }
+  .logpane { background: #12120f; color: #dcdcd4; border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 12px 14px; height: 62vh; overflow: auto;
+    white-space: pre-wrap; word-break: break-word;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .logside h3 { font-size: 12px; margin: 0 0 6px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.4px; }
+  .runs { list-style: none; margin: 0 0 18px; padding: 0; max-height: 32vh; overflow: auto; }
+  .runs li { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+    margin-bottom: 4px; cursor: pointer; font-size: 12px; font-family: ui-monospace, Menlo, monospace; }
+  .runs li:hover { background: var(--accent-soft); }
+  .legend { font-size: 12px; color: var(--muted); line-height: 1.7; }
+  .legend b { color: var(--ink); }
+  .legend .k { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    vertical-align: middle; margin-right: 5px; }
+
+  /* ============================================================
+     Editorial refresh: warm-paper ledger. Layered over the
+     structural rules above; touches the visual shell only.
+     ============================================================ */
+  body {
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+    background:
+      radial-gradient(1100px 520px at 92% -8%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
+      var(--bg);
+    background-attachment: fixed;
+  }
+  .wrap { max-width: 1360px; padding: 30px 26px 56px; }
+
+  /* Masthead */
+  header {
+    align-items: flex-end; gap: 12px; margin-bottom: 22px;
+    padding-bottom: 16px; border-bottom: 1.5px solid var(--ink);
+    position: relative;
+  }
+  header::after {   /* a second hairline for a printed-ledger rule */
+    content: ""; position: absolute; left: 0; right: 0; bottom: -4px; height: 1px;
+    background: var(--line);
+  }
+  h1 {
+    font-family: var(--font-display); font-weight: 600; font-size: 30px;
+    letter-spacing: -0.015em; line-height: 1; color: var(--ink);
+  }
+  h1::first-letter { color: var(--accent); }
+  .sub { font-family: var(--font-mono); font-size: 11px; letter-spacing: .02em;
+    text-transform: lowercase; color: var(--muted); }
+  .sub code { background: transparent; padding: 0; color: var(--accent); }
+  .head-right { gap: 12px; }
+  .saved-dot { font-family: var(--font-mono); font-size: 11px; letter-spacing: .03em; }
+
+  /* Cards / inputs */
+  .add, .agentbar, .tablewrap, .logpane { box-shadow: var(--shadow-sm); }
+  .add { padding: 14px; }
+  input, select, textarea, button { border-radius: 8px; }
+  input:focus, select:focus, textarea:focus { outline-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+  button.primary { box-shadow: var(--shadow-sm); transition: transform .08s ease, filter .12s ease; }
+  button.primary:active { transform: translateY(1px); }
+  button.ghost { border-radius: 8px; transition: color .12s ease, border-color .12s ease; }
+
+  /* Section label above the queue add-box */
+  .add-row { align-items: stretch; }
+  #newUrl, #newCompany, #newRole { border-radius: 8px; }
+
+  /* Stat chips: quiet ledger tags */
+  .chip { font-family: var(--font-mono); font-size: 11px; letter-spacing: .02em;
+    padding: 5px 11px; transition: background .12s ease, color .12s ease, border-color .12s ease; }
+  .chip:hover { border-color: var(--muted); }
+
+  /* Agent control panel: the cockpit. Distinct, tinted, labelled. */
+  .agentbar {
+    background:
+      linear-gradient(0deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent),
+      var(--panel);
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+    padding: 12px 14px; gap: 12px;
+  }
+  .agentbar::before {
+    content: "AGENT"; font-family: var(--font-mono); font-size: 10px; letter-spacing: .18em;
+    color: var(--accent); align-self: center; padding-right: 2px; font-weight: 600;
+  }
+  .agentbar .banner { font-family: var(--font-mono); font-size: 12px; }
+  .agentbar .num { font-family: var(--font-mono); }
+
+  /* Tabs: editorial underline */
+  .tabs { gap: 2px; border-bottom-color: var(--ink); }
+  .tab { font-family: var(--font-display); font-size: 15px; letter-spacing: .01em;
+    padding: 9px 18px 11px; margin-bottom: -1.5px; border-bottom-width: 2.5px;
+    transition: color .12s ease; }
+  .tab.active { border-bottom-color: var(--accent); }
+
+  /* Table chrome */
+  .tablewrap { border-radius: var(--radius); }
+  thead th { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .08em;
+    background: color-mix(in srgb, var(--accent) 4%, var(--panel)); }
+  td.date input, td.cov input { font-family: var(--font-mono); }
+  a.jd { font-family: var(--font-mono); }
+  td.company { font-family: var(--font-body); letter-spacing: -0.005em; }
+  tbody tr { transition: background .1s ease; }
+
+  /* Résumé PDF pill in its own column */
+  a.pdf {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: .02em;
+    color: var(--c-resume); text-decoration: none; padding: 2px 8px;
+    border: 1px solid color-mix(in srgb, var(--c-resume) 40%, var(--line));
+    border-radius: 999px; background: color-mix(in srgb, var(--c-resume) 8%, transparent);
+    white-space: nowrap; transition: filter .12s ease, transform .08s ease;
+  }
+  a.pdf:hover { filter: brightness(1.08); transform: translateY(-1px); }
+  a.pdf::before { content: "PDF"; font-weight: 600; }
+  a.pdf span { display: none; }         /* keep the pill compact; title has full name */
+  td.pdf-cell .none { color: var(--muted); opacity: .5; font-size: 12px; }
+  /* Copy-absolute-path button next to the PDF pill. */
+  .pathbtn {
+    margin-left: 4px; font-size: 12px; line-height: 1; padding: 3px 6px;
+    color: var(--muted); background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; cursor: pointer; vertical-align: middle;
+  }
+  .pathbtn:hover { color: var(--ink); border-color: var(--muted); }
+  .pathbtn.ok { color: var(--accent); border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent); }
+
+  /* Actions cell: hold delete + (for needs_review) Build / Drop without clipping. */
+  td.act { overflow: visible; }
+  td.act .rowact { justify-content: flex-end; align-items: center; flex-wrap: nowrap; }
+  .rowact button { flex: none; white-space: nowrap; }
+  td.act .del { margin-left: 2px; }
+  thead tr:first-child th:last-child { text-align: right; padding-right: 12px; }
+
+  /* Logs: section headers in the display face */
+  .logside h3 { font-family: var(--font-display); font-size: 13px; letter-spacing: 0;
+    text-transform: none; color: var(--ink); border-bottom: 1px solid var(--line); padding-bottom: 4px; }
+  .logbar #logTitle { font-family: var(--font-display); font-size: 16px; }
+  .logpane { border-radius: var(--radius); }
+
+  footer { font-family: var(--font-mono); font-size: 11px; line-height: 1.7;
+    border-top: 1px solid var(--line); margin-top: 22px; padding-top: 14px; }
+
+  /* Resizable columns + horizontal scroll.
+     JS sets each <col> width and the table's total width; the .tablewrap
+     scrolls on X whenever the total exceeds the viewport. */
+  .tablewrap { overflow: auto; }
+  table { width: auto; min-width: 0; }          /* JS sets the exact px width */
+  thead tr:first-child th { overflow: visible; }/* let the drag handle show */
+  .col-resize {
+    position: absolute; top: 0; right: 0; width: 9px; height: 100%;
+    cursor: col-resize; z-index: 5; user-select: none;
+  }
+  .col-resize::after {
+    content: ""; position: absolute; right: 3px; top: 7px; bottom: 7px; width: 1px;
+    background: var(--line);
+  }
+  .col-resize:hover::after, .col-resize.drag::after { background: var(--accent); width: 2px; top: 4px; bottom: 4px; }
+  body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none; }
+  .tablewrap::-webkit-scrollbar { height: 11px; width: 11px; }
+  .tablewrap::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--muted) 45%, transparent);
+    border-radius: 999px; border: 3px solid var(--panel); }
+  .tablewrap::-webkit-scrollbar-track { background: transparent; }
+
+  /* ============================================================
+     Interaction polish (HCI): affordance, feedback, focus,
+     status visibility, consistent motion. Layered last so it wins.
+     ============================================================ */
+  :root { --ease: cubic-bezier(.2, .7, .3, 1); }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+  }
+  button, .chip, .tab, a.jd, a.pdf { -webkit-tap-highlight-color: transparent; }
+
+  /* Keyboard focus ring on everything interactive (mouse focus stays quiet). */
+  button:focus-visible, .tab:focus-visible, .chip:focus-visible,
+  a.jd:focus-visible, a.pdf:focus-visible, summary:focus-visible,
+  input[type="checkbox"]:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 7px;
+  }
+
+  /* One consistent button system: primary (filled), ghost (quiet chip), danger. */
+  button { transition: background .14s var(--ease), color .14s var(--ease),
+    border-color .14s var(--ease), box-shadow .14s var(--ease), transform .07s var(--ease); }
+  button.primary { box-shadow: var(--shadow-sm); }
+  button.primary:hover { filter: brightness(1.05); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  button.primary:active { transform: translateY(0); filter: brightness(.97); box-shadow: var(--shadow-sm); }
+  button.primary:disabled { opacity: .5; cursor: not-allowed; transform: none; box-shadow: none; filter: none; }
+  /* Ghosts get a faint chrome so they read as buttons (affordance), quiet at rest. */
+  button.ghost { border: 1px solid var(--line); background: var(--panel); }
+  button.ghost:hover { color: var(--ink); border-color: var(--muted);
+    background: color-mix(in srgb, var(--ink) 5%, var(--panel)); }
+  button.ghost:active { transform: translateY(1px); }
+  .bulk .danger:hover { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+  /* Tabs: animated underline that slides in on activation. */
+  .tab { position: relative; border-bottom-color: transparent !important; }
+  .tab:hover { color: var(--ink); }
+  .tab::after {
+    content: ""; position: absolute; left: 16px; right: 16px; bottom: -1.5px; height: 2.5px;
+    background: var(--accent); border-radius: 2px 2px 0 0;
+    transform: scaleX(0); transform-origin: center; transition: transform .2s var(--ease);
+  }
+  .tab.active::after { transform: scaleX(1); }
+
+  /* Checkpoints: unify checkboxes to the brand, larger hit area. */
+  input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
+  td.pick input, #pickAll { width: 16px; height: 16px; }
+  details.dd .menu label { min-height: 30px; }   /* Fitts: comfortable status targets */
+
+  /* Schedule "enabled": a real toggle switch, so on/off state is unmistakable. */
+  #schedToggle {
+    appearance: none; -webkit-appearance: none; width: 36px; height: 20px; border: none;
+    border-radius: 999px; background: var(--line); position: relative; cursor: pointer;
+    vertical-align: middle; transition: background .18s var(--ease); flex: none;
+  }
+  #schedToggle::after {
+    content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; box-shadow: var(--shadow-sm);
+    transition: transform .18s var(--ease);
+  }
+  #schedToggle:checked { background: var(--accent); }
+  #schedToggle:checked::after { transform: translateX(16px); }
+
+  /* Stat chips (filter checkpoints): tactile press + clear pressed state. */
+  .chip { transition: background .14s var(--ease), color .14s var(--ease),
+    border-color .14s var(--ease), transform .07s var(--ease); }
+  .chip:active { transform: scale(.96); }
+  .chip.active { box-shadow: inset 0 0 0 1px var(--st-c, var(--accent)); }
+
+  /* Agent status: a clearer "live" pulse with a halo ring. */
+  .agentbar .dot.running { box-shadow: 0 0 0 3px color-mix(in srgb, var(--c-offer) 30%, transparent); }
+
+  /* Row action + inline mini buttons: consistent hover/press feedback. */
+  .rowact button, button.mini, .del { transition: background .12s var(--ease),
+    color .12s var(--ease), border-color .12s var(--ease), transform .07s var(--ease); }
+  .rowact button:hover { background: color-mix(in srgb, currentColor 12%, transparent); }
+  .rowact button:active, button.mini:active { transform: translateY(1px); }
+
+  /* Résumé PDF pill: press feedback to match its lift-on-hover. */
+  a.pdf:active { transform: translateY(0); filter: brightness(.97); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Jaya's Job Tracker</h1>
+    <span class="sub">writes to <code>job_queue.json</code></span>
+    <span class="head-right">
+      <button class="ghost" id="themeBtn" title="Toggle light / dark">theme</button>
+      <span class="saved-dot" id="savedDot">loading…</span>
+    </span>
+  </header>
+
+  <div class="add">
+    <div class="add-row">
+      <textarea id="newUrl" rows="1" placeholder="Paste job URL — or several at once, one per line"></textarea>
+      <input id="newCompany" placeholder="Company (optional)" />
+      <input id="newRole" placeholder="Role (optional)" />
+      <button class="primary" id="addBtn">Add to queue</button>
+    </div>
+    <div class="hint">Paste multiple URLs to queue them all at once. <kbd>Enter</kbd> adds, <kbd>Shift</kbd>+<kbd>Enter</kbd> makes a new line.</div>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="toolbar">
+    <input id="search" placeholder="Search everything — company, role, notes, URL…" />
+    <button class="ghost" id="clearFilters">Clear filters</button>
+    <button class="ghost" id="copyQueued">Copy queued URLs</button>
+    <button class="ghost" id="resetCols" title="Reset all column widths to default">Reset columns</button>
+    <span class="count" id="count"></span>
+  </div>
+
+  <div class="agentbar">
+    <span class="dot" id="agentDot"></span>
+    <button class="primary" id="runBtn">Run agent</button>
+    <button class="ghost" id="dryBtn">Dry run</button>
+    <label style="font-size:13px;color:var(--muted)">Parallel
+      <input class="num" type="number" id="agentConc" min="1" max="8" value="3" />
+    </label>
+    <span class="banner" id="agentBanner">agent idle</span>
+    <span class="sep"></span>
+    <details class="sched" id="sched">
+      <summary>Schedule</summary>
+      <div class="body">
+        <label style="font-size:13px;color:var(--muted)">
+          <input type="checkbox" id="schedToggle" /> enabled
+        </label>
+        <label style="font-size:13px;color:var(--muted)">times
+          <input type="text" id="schedTimes" placeholder="09:00,13:00,18:00" value="09:00,13:00,18:00" />
+        </label>
+        <label style="font-size:13px;color:var(--muted)">parallel
+          <input class="num" type="number" id="schedConc" min="1" max="8" value="3" />
+        </label>
+        <button class="ghost" id="schedSave">Save schedule</button>
+        <span class="banner" id="schedStatus"></span>
+      </div>
+    </details>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" id="tabBtnQueue">Queue</button>
+    <button class="tab" id="tabBtnLogs">Logs</button>
+  </div>
+
+  <div id="tabQueue">
+  <div class="bulk" id="bulk" hidden>
+    <b id="bulkCount">0 selected</b>
+    <select id="bulkStatus"><option value="">Set status…</option></select>
+    <button class="ghost danger" id="bulkDelete">Delete selected</button>
+    <button class="ghost" id="bulkClear">Clear selection</button>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <colgroup>
+        <col style="width:32px">   <!-- select   -->
+        <col style="width:116px">  <!-- date, wide enough for the native picker -->
+        <col style="width:148px">  <!-- company  -->
+        <col style="width:206px">  <!-- role     -->
+        <col style="width:136px">  <!-- status   -->
+        <col style="width:66px">   <!-- coverage -->
+        <col style="width:94px">   <!-- résumé pdf + copy path -->
+        <col style="width:150px">  <!-- jd       -->
+        <col style="width:210px">  <!-- notes    -->
+        <col style="width:132px">  <!-- actions (delete + needs_review build/drop) -->
+      </colgroup>
+      <thead>
+        <tr>
+          <th class="pick"><input type="checkbox" id="pickAll" title="Select all shown" /></th>
+          <th class="sortable" data-sort="date">Date <span class="arrow"></span></th>
+          <th class="sortable" data-sort="company">Company <span class="arrow"></span></th>
+          <th class="sortable" data-sort="role">Role <span class="arrow"></span></th>
+          <th class="sortable" data-sort="status">Status <span class="arrow"></span></th>
+          <th class="sortable" data-sort="coverage">Cov. <span class="arrow"></span></th>
+          <th>Résumé</th>
+          <th>JD</th>
+          <th class="sortable" data-sort="notes">Notes <span class="arrow"></span></th>
+          <th>Actions</th>
+        </tr>
+        <tr class="filters">
+          <th></th>
+          <th>
+            <div class="fx-date">
+              <select class="fx" id="fDateMode" title="Filter by date">
+                <option value="all">Any date</option>
+                <option value="today">Today</option>
+                <option value="7d">Last 7 days</option>
+                <option value="30d">Last 30 days</option>
+                <option value="on">On date…</option>
+                <option value="before">Before…</option>
+                <option value="after">After…</option>
+              </select>
+              <input type="date" class="fx" id="fDateOn" hidden />
+            </div>
+          </th>
+          <th><input class="fx" id="fCompany" placeholder="company…" /></th>
+          <th><input class="fx" id="fRole" placeholder="role…" /></th>
+          <th>
+            <details class="dd" id="fStatusDD">
+              <summary id="fStatusLabel">Any status</summary>
+              <div class="menu" id="fStatusMenu"></div>
+            </details>
+          </th>
+          <th><input class="fx" id="fCov" placeholder="cov…" /></th>
+          <th>
+            <select class="fx" id="fPdf" title="Filter by résumé PDF">
+              <option value="all">Any</option>
+              <option value="yes">Has PDF</option>
+              <option value="no">No PDF</option>
+            </select>
+          </th>
+          <th>
+            <select class="fx" id="fJd">
+              <option value="all">Any</option>
+              <option value="yes">Has link</option>
+              <option value="no">No link</option>
+            </select>
+          </th>
+          <th><input class="fx" id="fNotes" placeholder="notes…" /></th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>Nothing matches those filters.</div>
+  </div>
+
+  <footer>
+    Statuses: queued → needs_review → resume_ready → applied → screen → interviewing → offer / rejected / dropped.
+    Changes save automatically.
+    <br>
+    Keys: <kbd>↑</kbd><kbd>↓</kbd> or <kbd>Enter</kbd> / <kbd>Shift</kbd>+<kbd>Enter</kbd> move a row
+    within the same column, <kbd>Tab</kbd> moves across the row, <kbd>Esc</kbd> leaves the field,
+    <kbd>Alt</kbd>+<kbd>Enter</kbd> puts a real newline in notes, <kbd>/</kbd> jumps to search.
+    Filters, sort, and theme survive a reload.
+  </footer>
+  </div><!-- /tabQueue -->
+
+  <div id="tabLogs" hidden>
+    <div class="logbar">
+      <b id="logTitle">Live agent log</b>
+      <span class="live" id="logLive"></span>
+      <label style="font-size:12px;color:var(--muted);margin-left:auto">
+        <input type="checkbox" id="logAuto" checked /> auto-refresh
+      </label>
+      <button class="ghost" id="logRefresh">Refresh</button>
+    </div>
+    <div class="logview">
+      <pre class="logpane" id="logPane">No runs yet. Add job URLs to the queue, then press "Run agent".</pre>
+      <div class="logside">
+        <h3>Past runs</h3>
+        <ul class="runs" id="runsList"></ul>
+        <h3>What am I looking at?</h3>
+        <div class="legend">
+          The agent works each queued URL through stages:<br>
+          <b>fetch</b> pulls the job description from any site.<br>
+          <b>screen</b> then decides one of:<br>
+          <span class="k" style="background:var(--c-queued)"></span><b>BUILD</b> — clear fit, handed to the resume skill.<br>
+          <span class="k" style="background:var(--c-review)"></span><b>NEEDS_REVIEW</b> — a judgment call parked for you.<br>
+          <span class="k" style="background:var(--c-bad)"></span><b>HARD_DROP</b> — a blocker (no sponsorship, clearance, dead posting).<br>
+          <b>build</b> runs the <code>/resume-tailoring</code> skill to write and verify the
+          one-page resume, then sets the row <b>resume_ready</b>.<br><br>
+          Timestamped lines are live progress; the <b>done:</b> line summarizes the run.
+          Click a past run on the left to read its summary.
+        </div>
+      </div>
+    </div>
+  </div><!-- /tabLogs -->
+
+</div>
+
+<script>
+const STATUSES = ["queued","needs_review","resume_ready","applied","screen","interviewing","offer","rejected","dropped"];
+const STORE = "tracker.ui.v1";
+let jobs = [];
+let knownRev = null;
+const selected = new Set();     // ids ticked for bulk actions
+// id -> { fields, timer }. Edits are debounced and sent per row, so a row this
+// tab has never seen can never be clobbered by our save.
+const pending = new Map();
+
+// Every filter/sort control lives here, and this whole object is what gets
+// written to localStorage — so "restore on reload" is one save and one load.
+const ui = {
+  q: "", company: "", role: "", cov: "", notes: "",
+  statuses: [], dateMode: "all", dateOn: "", jd: "all", pdf: "all",
+  sortKey: "", sortDir: "asc", scroll: 0, colWidths: {}
+};
+
+/* ---------- resizable columns + horizontal scroll ---------- */
+// Order MUST match the <colgroup> / header cells.
+const COLS = ["pick", "date", "company", "role", "status", "coverage", "pdf", "jd", "notes", "act"];
+const DEFAULT_W = { pick: 32, date: 116, company: 148, role: 206, status: 136,
+  coverage: 66, pdf: 94, jd: 150, notes: 210, act: 132 };   // sum 1290, fits a full window
+
+function colW(k) { return (ui.colWidths && ui.colWidths[k]) || DEFAULT_W[k]; }
+
+function applyColWidths() {
+  const cols = document.querySelectorAll("table > colgroup > col");
+  let total = 0;
+  COLS.forEach((k, i) => {
+    const w = colW(k);
+    if (cols[i]) cols[i].style.width = w + "px";
+    total += w;
+  });
+  const t = document.querySelector("table");
+  if (t) t.style.width = total + "px";   // exact sum → wrap scrolls when wider than viewport
+}
+
+function setupColResize() {
+  const ths = document.querySelectorAll("thead tr:first-child th");
+  ths.forEach((th, i) => {
+    const key = COLS[i];
+    if (key === "pick" || key === "act") return;   // don't resize the tiny rails
+    const h = document.createElement("div");
+    h.className = "col-resize";
+    h.title = "Drag to resize · double-click to reset";
+    h.addEventListener("click", e => e.stopPropagation());   // never trigger sort
+    h.addEventListener("dblclick", e => {
+      e.stopPropagation();
+      if (ui.colWidths) delete ui.colWidths[key];
+      applyColWidths(); saveUI();
+    });
+    h.addEventListener("mousedown", e => {
+      e.preventDefault(); e.stopPropagation();
+      const startX = e.clientX, startW = colW(key);
+      h.classList.add("drag"); document.body.classList.add("col-resizing");
+      const mv = ev => {
+        ui.colWidths = ui.colWidths || {};
+        ui.colWidths[key] = Math.max(46, Math.round(startW + (ev.clientX - startX)));
+        applyColWidths();
+      };
+      const up = () => {
+        document.removeEventListener("mousemove", mv);
+        document.removeEventListener("mouseup", up);
+        h.classList.remove("drag"); document.body.classList.remove("col-resizing");
+        saveUI();
+      };
+      document.addEventListener("mousemove", mv);
+      document.addEventListener("mouseup", up);
+    });
+    th.appendChild(h);
+  });
+}
+
+const $ = id => document.getElementById(id);
+const dot = $("savedDot");
+
+/* ---------- persistence ---------- */
+
+function saveUI() {
+  ui.scroll = $("rows").closest(".tablewrap").scrollTop;
+  try { localStorage.setItem(STORE, JSON.stringify(ui)); } catch {}
+}
+
+function loadUI() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(STORE) || "{}"); } catch {}
+  Object.assign(ui, saved);
+  if (!Array.isArray(ui.statuses)) ui.statuses = [];
+  // Push the restored state back into the actual controls.
+  $("search").value = ui.q;
+  $("fCompany").value = ui.company;
+  $("fRole").value = ui.role;
+  $("fCov").value = ui.cov;
+  $("fNotes").value = ui.notes;
+  $("fDateMode").value = ui.dateMode;
+  $("fDateOn").value = ui.dateOn;
+  $("fDateOn").hidden = ui.dateMode === "all" || ui.dateMode === "today"
+                     || ui.dateMode === "7d" || ui.dateMode === "30d";
+  $("fJd").value = ui.jd;
+  $("fPdf").value = ui.pdf || "all";
+  markSet();
+  syncStatusUI();
+  paintSortHeaders();
+  applyColWidths();
+}
+
+// A filter that is doing something looks different from one that is idle.
+function markSet() {
+  const pairs = [["fCompany", ui.company], ["fRole", ui.role], ["fCov", ui.cov],
+                 ["fNotes", ui.notes], ["fDateMode", ui.dateMode !== "all"],
+                 ["fDateOn", ui.dateOn && !$("fDateOn").hidden], ["fJd", ui.jd !== "all"],
+                 ["fPdf", (ui.pdf || "all") !== "all"]];
+  for (const [id, on] of pairs) $(id).classList.toggle("set", !!on);
+  $("fStatusDD").classList.toggle("set", ui.statuses.length > 0);
+  $("search").classList.toggle("set", !!ui.q);
+}
+
+/* ---------- status line ---------- */
+
+function idle() {
+  dot.classList.remove("on", "stale");
+  dot.onclick = null;
+  dot.textContent = jobs.length + " tracked";
+}
+
+function flashSaved() {
+  if (pending.size) return;           // more edits still in flight
+  dot.textContent = "saved";
+  dot.classList.add("on");
+  setTimeout(() => { if (!dot.classList.contains("stale")) idle(); }, 1400);
+}
+
+function showStale() {
+  dot.textContent = "changed on disk · reload";
+  dot.classList.add("stale");
+  dot.classList.remove("on");
+  dot.onclick = () => { saveUI(); location.reload(); };
+}
+
+function flashUpdated() {
+  dot.textContent = "updated by agent";
+  dot.classList.add("on");
+  dot.classList.remove("stale");
+  setTimeout(() => { if (!dot.classList.contains("stale")) idle(); }, 1600);
+}
+
+/* ---------- server ---------- */
+
+async function api(path, method, body) {
+  const r = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+  if (d.rev !== undefined) knownRev = d.rev;
+  return d;
+}
+
+async function copyText(text, btn, restore) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      ok = document.execCommand("copy"); ta.remove();
+    } catch { /* clipboard unavailable */ }
+  }
+  if (btn) {
+    btn.textContent = ok ? "✓" : "✕";
+    btn.classList.toggle("ok", ok);
+    setTimeout(() => { btn.textContent = restore; btn.classList.remove("ok"); }, 1100);
+  }
+}
+
+async function load() {
+  const d = await api("/api/jobs", "GET");
+  jobs = d.jobs || [];
+  knownRev = d.rev;
+  idle();
+  // render() persists the (still zero) scroll position, so grab the restore
+  // target first. Two frames: the second runs after notes fields have sized.
+  const want = ui.scroll || 0;
+  render();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    $("rows").closest(".tablewrap").scrollTop = want;
+    ui.scroll = want;
+  }));
+}
+
+function rowEl(id) { return document.querySelector(`tr[data-id="${CSS.escape(id)}"]`); }
+
+// Save only the fields that changed, only on the row that changed.
+function patchJob(j, fields) {
+  dot.textContent = "saving…";
+  dot.classList.remove("on", "stale");
+  const tr = rowEl(j.id);
+  if (tr) { tr.classList.add("saving"); tr.classList.remove("saved"); }
+  let e = pending.get(j.id);
+  if (!e) { e = { fields: {}, timer: null }; pending.set(j.id, e); }
+  Object.assign(e.fields, fields);
+  clearTimeout(e.timer);
+  e.timer = setTimeout(async () => {
+    const fieldsToSend = e.fields;
+    pending.delete(j.id);
+    const row = rowEl(j.id);
+    try {
+      await api("/api/jobs/" + encodeURIComponent(j.id), "PATCH", fieldsToSend);
+      if (row) {
+        row.classList.remove("saving");
+        row.classList.add("saved");
+        setTimeout(() => row.classList.remove("saved"), 900);
+      }
+      flashSaved();
+    } catch (err) {
+      if (row) row.classList.remove("saving");
+      dot.textContent = "save failed · " + err.message;
+      dot.classList.remove("on");
+    }
+  }, 400);
+}
+
+// Notice writes made outside this tab (the resume-tailoring skill uses
+// tracker/update_queue.py). Never overwrite what the user is typing: just
+// offer a reload.
+// True while the user is actively typing/selecting inside a table row, so an
+// auto-refresh never yanks the field out from under them.
+function editingRow() {
+  const el = document.activeElement;
+  return !!(el && el.closest && el.closest("#rows")
+            && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+}
+
+async function pollRev() {
+  if (pending.size) return;                       // our own edits still saving
+  try {
+    const r = await fetch("/api/rev");
+    const d = await r.json();
+    if (knownRev === null || d.rev === knownRev) return;
+    if (editingRow()) { showStale(); return; }    // mid-edit: offer manual reload, don't clobber
+    await load();                                 // safe: auto-refresh in place (scroll + selection kept)
+    flashUpdated();
+  } catch { /* server down; stay quiet */ }
+}
+// Poll faster while the agent is running so its row updates appear near-live.
+// Started from the boot block (below) so agentTimer is already defined.
+function revInterval() { return (typeof agentTimer !== "undefined" && agentTimer) ? 2500 : 5000; }
+function scheduleRev() { setTimeout(async () => { await pollRev(); scheduleRev(); }, revInterval()); }
+
+/* ---------- adding ---------- */
+
+function guessCompany(url) {
+  try {
+    const u = new URL(url);
+    const gh = u.pathname.match(/\/([^\/]+)\/jobs\//);
+    if (u.hostname.includes("greenhouse") && gh) return gh[1];
+    const forParam = u.searchParams.get("for");   // greenhouse embed links
+    if (forParam) return forParam;
+    const host = u.hostname.replace(/^www\./, "").split(".")[0];
+    if (host === "job-boards" || host === "boards" || host === "jobs") {
+      const seg = u.pathname.split("/").filter(Boolean)[0];
+      return gh ? gh[1] : (seg || "");
+    }
+    return host;
+  } catch { return ""; }
+}
+
+function today() { return new Date().toISOString().slice(0, 10); }
+
+async function add() {
+  const raw = $("newUrl").value.trim();
+  const company = $("newCompany").value.trim();
+  const role = $("newRole").value.trim();
+  if (!raw && !company) return;
+  // One box, one or many URLs. Anything that is not a URL is treated as a
+  // single free-text entry so a bare company name still works.
+  const urls = raw.split(/\s+/).filter(u => /^https?:\/\//.test(u));
+  const batch = urls.length ? urls : [""];
+  $("newUrl").value = $("newCompany").value = $("newRole").value = "";
+  autosize($("newUrl"));
+  try {
+    for (const url of batch) {
+      const d = await api("/api/jobs", "POST", {
+        date: today(),
+        company: company || guessCompany(url) || "unknown",
+        role, coverage: "", status: "queued", url, notes: ""
+      });
+      jobs.unshift(d.job);        // server owns the id
+    }
+    flashSaved();
+    render();
+  } catch (err) {
+    dot.textContent = "add failed · " + err.message;
+  }
+  $("newUrl").focus();
+}
+
+/* ---------- filtering ---------- */
+
+function renderStats() {
+  const { scoped, whole, total } = counts();
+  const narrowed = total !== jobs.length;      // some non-status filter is on
+  const el = $("stats");
+  el.innerHTML = "";
+
+  const all = document.createElement("button");
+  all.className = "chip" + (ui.statuses.length === 0 ? " active" : "");
+  all.innerHTML = `all <b>${total}</b>` + (narrowed ? ` <i>of ${jobs.length}</i>` : "");
+  all.title = narrowed
+    ? `${total} of ${jobs.length} rows match the current filters`
+    : "Every row";
+  all.onclick = () => { ui.statuses = []; syncStatusUI(); render(); };
+  el.appendChild(all);
+
+  for (const s of STATUSES) {
+    // Keep a status on the bar if it exists at all, or if it is selected, so
+    // the bar does not reshuffle under the cursor while you type a filter.
+    if (!whole[s] && !ui.statuses.includes(s)) continue;
+    const n = scoped[s];
+    const b = document.createElement("button");
+    b.className = "chip" + (ui.statuses.includes(s) ? " active" : "") + (n ? "" : " zero");
+    b.dataset.st = s;
+    b.innerHTML = `${s.replace("_", " ")} <b>${n}</b>` +
+                  (narrowed && n !== whole[s] ? ` <i>of ${whole[s]}</i>` : "");
+    b.title = narrowed
+      ? `${n} of ${whole[s]} ${s.replace("_", " ")} rows match the other filters`
+      : "Click to toggle — chips and the Status column filter are the same filter";
+    b.onclick = () => {
+      ui.statuses = ui.statuses.includes(s) ? ui.statuses.filter(x => x !== s) : [...ui.statuses, s];
+      syncStatusUI(); render();
+    };
+    el.appendChild(b);
+  }
+}
+
+function daysAgo(n) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - n);
+  return d;
+}
+
+function inDateRange(dateStr) {
+  const mode = ui.dateMode;
+  if (mode === "all") return true;
+  if (!dateStr) return false;
+  if (mode === "on")     return !ui.dateOn || dateStr === ui.dateOn;
+  if (mode === "before") return !ui.dateOn || dateStr < ui.dateOn;
+  if (mode === "after")  return !ui.dateOn || dateStr > ui.dateOn;
+  // dateStr is YYYY-MM-DD; parse as local midnight, not UTC.
+  const [y, m, d] = dateStr.split("-").map(Number);
+  if (!y || !m || !d) return false;
+  const when = new Date(y, m - 1, d);
+  if (mode === "today") return dateStr === today();
+  if (mode === "7d")  return when >= daysAgo(6);
+  if (mode === "30d") return when >= daysAgo(29);
+  return true;
+}
+
+const has = (hay, needle) => !needle || (hay || "").toLowerCase().includes(needle.toLowerCase());
+
+// One definition of "this row is in scope", shared by the table and the
+// counters so a number can never disagree with what the table shows.
+// ignoreStatus lets the chips count as if the status filter were not set.
+function matches(j, opts = {}) {
+  if (!opts.ignoreStatus && ui.statuses.length && !ui.statuses.includes(j.status)) return false;
+  if (!inDateRange(j.date)) return false;
+  if (!has(j.company, ui.company)) return false;
+  if (!has(j.role, ui.role)) return false;
+  if (!has(j.coverage, ui.cov)) return false;
+  if (!has(j.notes, ui.notes)) return false;
+  if (ui.jd === "yes" && !j.url) return false;
+  if (ui.jd === "no" && j.url) return false;
+  if (ui.pdf === "yes" && !j.pdf) return false;
+  if (ui.pdf === "no" && j.pdf) return false;
+  if (ui.q) {
+    const blob = [j.company, j.role, j.notes, j.url, j.coverage, j.status, j.date].join(" ").toLowerCase();
+    if (!blob.includes(ui.q.toLowerCase())) return false;
+  }
+  return true;
+}
+
+// Chip counts deliberately ignore the status filter itself. Counting with it
+// applied would zero every chip except the selected one, so the bar could no
+// longer tell you what is waiting behind the other statuses. Each chip instead
+// answers "how many rows would I get if I picked this, given my other filters".
+function counts() {
+  const scoped = {}, whole = {};
+  for (const s of STATUSES) { scoped[s] = 0; whole[s] = 0; }
+  let total = 0;
+  for (const j of jobs) {
+    if (whole[j.status] !== undefined) whole[j.status]++;
+    if (!matches(j, { ignoreStatus: true })) continue;
+    total++;
+    if (scoped[j.status] !== undefined) scoped[j.status]++;
+  }
+  return { scoped, whole, total };
+}
+
+function visibleJobs() {
+  const out = jobs.filter(j => matches(j));
+  if (ui.sortKey) {
+    const dir = ui.sortDir === "desc" ? -1 : 1;
+    const key = j => ui.sortKey === "status"
+      ? String(STATUSES.indexOf(j.status)).padStart(2, "0")
+      : (j[ui.sortKey] || "");
+    out.sort((a, b) => {
+      const x = key(a), y = key(b);
+      // Blanks sink to the bottom regardless of direction.
+      if (!x && y) return 1;
+      if (x && !y) return -1;
+      return String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: "base" }) * dir;
+    });
+  }
+  return out;
+}
+
+function paintSortHeaders() {
+  for (const th of document.querySelectorAll("th.sortable")) {
+    const on = th.dataset.sort === ui.sortKey;
+    th.classList.toggle("sorted", on);
+    th.querySelector(".arrow").textContent = on ? (ui.sortDir === "asc" ? "▲" : "▼") : "↕";
+  }
+}
+
+/* ---------- status filter dropdown ---------- */
+
+function buildStatusMenu() {
+  const menu = $("fStatusMenu");
+  menu.innerHTML = "";
+  for (const s of STATUSES) {
+    const lab = document.createElement("label");
+    lab.dataset.st = s;
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.value = s;
+    cb.onchange = () => {
+      ui.statuses = [...menu.querySelectorAll("input:checked")].map(i => i.value);
+      syncStatusUI(); render();
+    };
+    const sp = document.createElement("span");
+    sp.textContent = s.replace("_", " ");
+    lab.append(cb, sp);
+    menu.appendChild(lab);
+  }
+  const actions = document.createElement("div");
+  actions.className = "dd-actions";
+  const none = document.createElement("button");
+  none.className = "ghost"; none.textContent = "Clear";
+  none.onclick = () => { ui.statuses = []; syncStatusUI(); render(); };
+  const open = document.createElement("button");
+  open.className = "ghost"; open.textContent = "Open only";
+  open.title = "queued, resume_ready, applied, screen, interviewing";
+  open.onclick = () => {
+    ui.statuses = ["queued", "resume_ready", "applied", "screen", "interviewing"];
+    syncStatusUI(); render();
+  };
+  actions.append(none, open);
+  menu.appendChild(actions);
+}
+
+// Chips, checkboxes, and the summary label all read from ui.statuses.
+function syncStatusUI() {
+  for (const cb of $("fStatusMenu").querySelectorAll('input[type="checkbox"]')) {
+    cb.checked = ui.statuses.includes(cb.value);
+  }
+  const n = ui.statuses.length;
+  $("fStatusLabel").textContent =
+    n === 0 ? "Any status" : n === 1 ? ui.statuses[0].replace("_", " ") : n + " statuses";
+  markSet();
+}
+
+/* ---------- cells ---------- */
+
+function autosize(ta) {
+  ta.style.height = "auto";
+  ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
+}
+
+// Move focus one row up or down, staying in the same column, and make sure the
+// row you land on is actually on screen and clear of the sticky header.
+function moveFocus(el, dir) {
+  const td = el.closest("td");
+  const tr = td.parentElement;
+  const i = [...tr.children].indexOf(td);
+  const next = dir > 0 ? tr.nextElementSibling : tr.previousElementSibling;
+  const target = next && next.children[i] &&
+    next.children[i].querySelector("input, select, textarea");
+  if (!target) { el.blur(); return; }
+  target.focus();
+  // select() is only defined for text-ish inputs; ignore it elsewhere.
+  try { target.select(); } catch {}
+  next.scrollIntoView({ block: "nearest" });
+}
+
+// Grid navigation. Enter and the arrows walk a column, Tab walks a row
+// (buttons are skipped so Tab only lands on things you can edit), Esc leaves.
+function navKeys(el) {
+  el.addEventListener("keydown", e => {
+    if (e.key === "Escape") { el.blur(); return; }
+
+    // Alt+Enter is the escape hatch for an actual newline in notes.
+    if (e.key === "Enter" && e.altKey && el.tagName === "TEXTAREA") {
+      e.preventDefault();
+      const a = el.selectionStart, b = el.selectionEnd;
+      el.value = el.value.slice(0, a) + "\n" + el.value.slice(b);
+      el.selectionStart = el.selectionEnd = a + 1;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+
+    let dir = 0;
+    if (e.key === "Enter") dir = e.shiftKey ? -1 : 1;
+    else if (e.key === "ArrowDown") dir = 1;
+    else if (e.key === "ArrowUp") dir = -1;
+    else return;
+
+    // Inside the expanded notes box the arrows belong to the caret first, and
+    // only move rows once it has run out of text to travel through.
+    if (el.tagName === "TEXTAREA" && e.key !== "Enter") {
+      const caret = el.selectionStart;
+      if (dir < 0 && !(caret === 0 && el.selectionEnd === 0)) return;
+      if (dir > 0 && !(el.selectionEnd === el.value.length)) return;
+    }
+
+    e.preventDefault();
+    moveFocus(el, dir);
+  });
+}
+
+// Name the applicant-tracking system rather than the raw hostname, so the
+// column says "greenhouse" instead of truncating "job-boards.greenhouse.io"
+// down to "job-boar…". Full URL stays in the tooltip.
+const ATS = [
+  [/greenhouse|job-boards/, "greenhouse"], [/lever\.co/, "lever"],
+  [/ashbyhq/, "ashby"],                    [/myworkdayjobs|workday/, "workday"],
+  [/smartrecruiters/, "smartrec"],         [/icims/, "icims"],
+  [/linkedin/, "linkedin"],                [/wellfound|angel\.co/, "wellfound"],
+  [/taleo/, "taleo"],                      [/bamboohr/, "bamboo"],
+  [/jobvite/, "jobvite"],                  [/workable/, "workable"],
+  [/recruitee/, "recruitee"],              [/breezy/, "breezy"],
+  [/rippling/, "rippling"],                [/dover\./, "dover"]
+];
+
+function jdLabel(url) {
+  try {
+    const host = new URL(url).hostname;
+    for (const [re, name] of ATS) if (re.test(host)) return name;
+    return host.replace(/^www\./, "").split(".")[0];
+  } catch { return "open"; }
+}
+
+function renderJd(cell, j) {
+  cell.innerHTML = "";
+  const editor = () => {
+    const inp = document.createElement("input");
+    inp.value = j.url || "";
+    inp.placeholder = "paste url";
+    inp.oninput = e => { j.url = e.target.value.trim(); patchJob(j, { url: j.url }); };
+    inp.onblur = () => { if (j.url) renderJd(cell, j); };
+    inp.onkeydown = e => { if (e.key === "Enter" || e.key === "Escape") inp.blur(); };
+    cell.innerHTML = ""; cell.appendChild(inp); inp.focus(); inp.select();
+  };
+  if (!j.url) {
+    const b = document.createElement("button");
+    b.className = "mini"; b.textContent = "+ url"; b.style.marginLeft = "0";
+    b.tabIndex = -1;              // Tab stays on editable fields
+    b.onclick = editor;
+    cell.appendChild(b);
+    return;
+  }
+  const a = document.createElement("a");
+  a.className = "jd"; a.href = j.url; a.target = "_blank"; a.rel = "noopener noreferrer";
+  a.textContent = jdLabel(j.url) + " ↗"; a.title = j.url;
+  cell.appendChild(a);
+
+  const copy = document.createElement("button");
+  copy.className = "mini"; copy.textContent = "copy"; copy.title = j.url;
+  copy.tabIndex = -1;
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(j.url);
+    } catch {
+      const t = document.createElement("textarea");
+      t.value = j.url; document.body.appendChild(t); t.select();
+      document.execCommand("copy"); t.remove();
+    }
+    copy.textContent = "copied"; copy.classList.add("ok");
+    setTimeout(() => { copy.textContent = "copy"; copy.classList.remove("ok"); }, 1200);
+  };
+  cell.appendChild(copy);
+
+  const edit = document.createElement("button");
+  edit.className = "mini"; edit.textContent = "✎"; edit.title = "Change URL";
+  edit.tabIndex = -1;
+  edit.onclick = editor;
+  cell.appendChild(edit);
+}
+
+/* ---------- render ---------- */
+
+function render() {
+  renderStats();
+  markSet();
+  paintSortHeaders();
+  const tb = $("rows");
+  tb.innerHTML = "";
+  const shown = visibleJobs();
+  $("empty").hidden = shown.length > 0;
+  $("count").textContent = shown.length === jobs.length
+    ? `${jobs.length} rows`
+    : `${shown.length} of ${jobs.length} rows`;
+
+  for (const j of shown) {
+    const tr = document.createElement("tr");
+    tr.dataset.st = j.status;          // drives the whole-row colour
+    tr.dataset.id = j.id;
+    if (selected.has(j.id)) tr.classList.add("sel");
+
+    const td = (cls, node) => {
+      const c = document.createElement("td");
+      c.className = cls || "";
+      if (node) c.appendChild(node);
+      return c;
+    };
+    // Every text field behaves the same way: type, debounce, save, keyboard-walk.
+    const field = (key, opts = {}) => {
+      const el = document.createElement(opts.multiline ? "textarea" : "input");
+      if (opts.type) el.type = opts.type;
+      if (opts.multiline) el.rows = 1;
+      if (opts.placeholder) el.placeholder = opts.placeholder;
+      el.value = j[key] || "";
+      el.title = j[key] || "";
+      el.oninput = e => {
+        j[key] = e.target.value;
+        el.title = j[key];
+        patchJob(j, { [key]: j[key] });
+        if (key === "date") dCell.classList.toggle("is-today", j.date === today());
+      };
+      navKeys(el);
+      return el;
+    };
+
+    const pick = document.createElement("input");
+    pick.type = "checkbox";
+    pick.checked = selected.has(j.id);
+    pick.onchange = () => {
+      pick.checked ? selected.add(j.id) : selected.delete(j.id);
+      tr.classList.toggle("sel", pick.checked);
+      renderBulk();
+    };
+    tr.appendChild(td("pick", pick));
+
+    const dCell = td("date", field("date", { type: "date" }));
+    if (j.date === today()) dCell.classList.add("is-today");
+    tr.appendChild(dCell);
+
+    tr.appendChild(td("company", field("company")));
+    tr.appendChild(td("role", field("role", { placeholder: "role…" })));
+
+    const sel = document.createElement("select");
+    for (const s of STATUSES) {
+      const o = document.createElement("option");
+      o.value = s; o.textContent = s.replace("_", " ");
+      if (s === j.status) o.selected = true;
+      sel.appendChild(o);
+    }
+    // Recolour the row immediately, before the save round-trip.
+    sel.onchange = e => {
+      j.status = e.target.value; tr.dataset.st = j.status;
+      patchJob(j, { status: j.status }); renderStats();
+    };
+    navKeys(sel);
+    tr.appendChild(td("status", sel));
+
+    tr.appendChild(td("cov", field("coverage", { placeholder: "—" })));
+
+    const pdfCell = document.createElement("td");
+    pdfCell.className = "pdf-cell";
+    if (j.pdf) {
+      const a = document.createElement("a");
+      a.className = "pdf";
+      a.href = "/pdf/" + j.pdf.split("/").map(encodeURIComponent).join("/");
+      a.target = "_blank"; a.rel = "noopener";
+      a.title = "Open résumé PDF · " + j.pdf.split("/").pop();
+      const s = document.createElement("span"); s.textContent = "pdf"; a.appendChild(s);
+      pdfCell.appendChild(a);
+      if (j.pdf_abs) {
+        const cp = document.createElement("button");
+        cp.className = "pathbtn"; cp.textContent = "⧉";
+        cp.title = "Copy absolute file path:\n" + j.pdf_abs;
+        cp.onclick = () => copyText(j.pdf_abs, cp, "⧉");
+        pdfCell.appendChild(cp);
+      }
+    } else {
+      const n = document.createElement("span"); n.className = "none"; n.textContent = "—";
+      pdfCell.appendChild(n);
+    }
+    tr.appendChild(pdfCell);
+
+    const jdCell = document.createElement("td");
+    jdCell.className = "jd-cell";
+    renderJd(jdCell, j);
+    tr.appendChild(jdCell);
+
+    tr.appendChild(td("notes", field("notes", { multiline: true, placeholder: "notes…" })));
+
+    const actWrap = document.createElement("div");
+    actWrap.className = "rowact";
+    if (j.status === "needs_review") {
+      const go = document.createElement("button");
+      go.className = "go"; go.textContent = "Build"; go.title = "Re-queue for the next agent run";
+      go.onclick = () => { j.status = "queued"; tr.dataset.st = "queued"; patchJob(j, { status: "queued" }); renderStats(); render(); };
+      const no = document.createElement("button");
+      no.className = "no"; no.textContent = "Drop"; no.title = "Mark dropped";
+      no.onclick = () => { j.status = "dropped"; tr.dataset.st = "dropped"; patchJob(j, { status: "dropped" }); renderStats(); render(); };
+      actWrap.appendChild(go); actWrap.appendChild(no);
+    }
+    const del = document.createElement("button");
+    del.className = "del"; del.textContent = "×"; del.title = "Remove (undoable)";
+    del.tabIndex = -1;
+    del.onclick = () => removeJob(j);
+    actWrap.appendChild(del);
+    tr.appendChild(td("act", actWrap));
+
+    tb.appendChild(tr);
+  }
+  renderBulk();
+  saveUI();
+}
+
+/* ---------- delete with undo ---------- */
+
+let toastTimer = null;
+
+function toast(msg, undo) {
+  document.querySelector(".toast")?.remove();
+  clearTimeout(toastTimer);
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.append(document.createTextNode(msg));
+  if (undo) {
+    const b = document.createElement("button");
+    b.textContent = "Undo";
+    b.onclick = () => { t.remove(); undo(); };
+    t.appendChild(b);
+  }
+  document.body.appendChild(t);
+  toastTimer = setTimeout(() => t.remove(), 7000);
+}
+
+async function removeJob(j) {
+  try {
+    await api("/api/jobs/" + encodeURIComponent(j.id), "DELETE");
+    const at = jobs.findIndex(x => x.id === j.id);
+    jobs = jobs.filter(x => x.id !== j.id);
+    selected.delete(j.id);
+    render();
+    toast(`Removed ${j.company || "entry"}`, async () => {
+      // POST honours an id in the body, so the row comes back identical. The
+      // server re-inserts it at the top of the file; put it back where it was
+      // here so the view does not jump.
+      const d = await api("/api/jobs", "POST", j);
+      jobs = jobs.filter(x => x.id !== d.job.id);
+      jobs.splice(at, 0, d.job);
+      render();
+    });
+  } catch (err) {
+    dot.textContent = "delete failed · " + err.message;
+  }
+}
+
+/* ---------- bulk actions ---------- */
+
+function renderBulk() {
+  // Drop ids that scrolled out of existence (deleted or filtered away entirely).
+  const live = new Set(jobs.map(j => j.id));
+  for (const id of [...selected]) if (!live.has(id)) selected.delete(id);
+  $("bulk").hidden = selected.size === 0;
+  $("bulkCount").textContent = selected.size + " selected";
+  const shownIds = [...document.querySelectorAll("#rows tr")].map(tr => tr.dataset.id);
+  $("pickAll").checked = shownIds.length > 0 && shownIds.every(id => selected.has(id));
+}
+
+async function bulkSetStatus(status) {
+  const ids = [...selected];
+  for (const id of ids) {
+    const j = jobs.find(x => x.id === id);
+    if (!j || j.status === status) continue;
+    j.status = status;
+    try { await api("/api/jobs/" + encodeURIComponent(id), "PATCH", { status }); }
+    catch (err) { dot.textContent = "bulk save failed · " + err.message; return; }
+  }
+  // The rows may have just fallen outside the active status filter; leaving
+  // them ticked would show a selection count with nothing on screen.
+  selected.clear();
+  flashSaved();
+  render();
+}
+
+async function bulkDelete() {
+  const ids = [...selected];
+  if (!confirm(`Delete ${ids.length} ${ids.length === 1 ? "row" : "rows"}? This one is not undoable.`)) return;
+  for (const id of ids) {
+    try { await api("/api/jobs/" + encodeURIComponent(id), "DELETE"); }
+    catch (err) { dot.textContent = "bulk delete failed · " + err.message; }
+  }
+  jobs = jobs.filter(j => !selected.has(j.id));
+  selected.clear();
+  flashSaved();
+  render();
+}
+
+/* ---------- wiring ---------- */
+
+// Text filters share one handler: store, persist, re-render. Rebuilding 100+
+// rows per keystroke is wasteful, so coalesce bursts of typing into one render.
+let filterTimer = null;
+for (const [id, key] of [["search", "q"], ["fCompany", "company"], ["fRole", "role"],
+                         ["fCov", "cov"], ["fNotes", "notes"]]) {
+  $(id).addEventListener("input", e => {
+    ui[key] = e.target.value.trim();
+    markSet();
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(render, 120);
+  });
+}
+
+$("fDateMode").addEventListener("change", e => {
+  ui.dateMode = e.target.value;
+  const needsDate = ["on", "before", "after"].includes(ui.dateMode);
+  $("fDateOn").hidden = !needsDate;
+  if (needsDate && !$("fDateOn").value) { $("fDateOn").value = today(); ui.dateOn = today(); }
+  render();
+});
+$("fDateOn").addEventListener("change", e => { ui.dateOn = e.target.value; render(); });
+$("fJd").addEventListener("change", e => { ui.jd = e.target.value; render(); });
+$("fPdf").addEventListener("change", e => { ui.pdf = e.target.value; render(); });
+$("resetCols").onclick = () => {
+  ui.colWidths = {};
+  applyColWidths();
+  saveUI();
+  $("resetCols").textContent = "reset ✓";
+  setTimeout(() => { $("resetCols").textContent = "Reset columns"; }, 1200);
+};
+
+for (const th of document.querySelectorAll("th.sortable")) {
+  th.onclick = () => {
+    const k = th.dataset.sort;
+    // asc → desc → back to file order.
+    if (ui.sortKey !== k) { ui.sortKey = k; ui.sortDir = "asc"; }
+    else if (ui.sortDir === "asc") ui.sortDir = "desc";
+    else ui.sortKey = "";
+    render();
+  };
+}
+
+$("clearFilters").onclick = () => {
+  Object.assign(ui, {
+    q: "", company: "", role: "", cov: "", notes: "",
+    statuses: [], dateMode: "all", dateOn: "", jd: "all", pdf: "all", sortKey: "", sortDir: "asc"
+  });
+  $("search").value = ""; $("fCompany").value = ""; $("fRole").value = "";
+  $("fCov").value = ""; $("fNotes").value = ""; $("fDateMode").value = "all";
+  $("fDateOn").hidden = true; $("fJd").value = "all"; $("fPdf").value = "all";
+  syncStatusUI();
+  render();
+};
+
+$("pickAll").onchange = e => {
+  const shownIds = [...document.querySelectorAll("#rows tr")].map(tr => tr.dataset.id);
+  for (const id of shownIds) e.target.checked ? selected.add(id) : selected.delete(id);
+  render();
+};
+
+for (const s of STATUSES) {
+  const o = document.createElement("option");
+  o.value = s; o.textContent = "Set → " + s.replace("_", " ");
+  $("bulkStatus").appendChild(o);
+}
+$("bulkStatus").onchange = e => {
+  const v = e.target.value;
+  e.target.value = "";
+  if (v) bulkSetStatus(v);
+};
+$("bulkDelete").onclick = bulkDelete;
+$("bulkClear").onclick = () => { selected.clear(); render(); };
+
+$("addBtn").onclick = add;
+$("newUrl").addEventListener("input", e => autosize(e.target));
+$("newUrl").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); add(); }
+});
+$("newRole").addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+$("newCompany").addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+
+$("copyQueued").onclick = () => {
+  const urls = jobs.filter(j => j.status === "queued" && j.url).map(j => j.url).join("\n");
+  navigator.clipboard.writeText(urls);
+  $("copyQueued").textContent = urls ? "copied!" : "none queued";
+  setTimeout(() => { $("copyQueued").textContent = "Copy queued URLs"; }, 1400);
+};
+
+$("themeBtn").onclick = () => {
+  const cur = document.documentElement.dataset.theme
+    || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const next = cur === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  try { localStorage.setItem("tracker.theme", next); } catch {}
+};
+const savedTheme = (() => { try { return localStorage.getItem("tracker.theme"); } catch { return null; } })();
+if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+
+// Close the status dropdown when the click lands elsewhere.
+document.addEventListener("click", e => {
+  const dd = $("fStatusDD");
+  if (dd.open && !dd.contains(e.target)) dd.open = false;
+});
+
+// "/" focuses search from anywhere outside a field.
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+    e.preventDefault(); $("search").focus(); $("search").select();
+  }
+});
+
+$("rows").closest(".tablewrap").addEventListener("scroll", () => {
+  clearTimeout(window.__st);
+  window.__st = setTimeout(saveUI, 200);
+});
+addEventListener("beforeunload", saveUI);
+
+/* ---------- agent controls ---------- */
+async function runAgent(dry) {
+  const concurrency = Math.max(1, Math.min(8, parseInt($("agentConc").value) || 3));
+  try {
+    await api("/api/run-agent", "POST", { concurrency, dry_run: !!dry });
+    $("agentBanner").textContent = dry ? "dry run started…" : "agent started…";
+    $("runBtn").disabled = true;
+    switchTab("logs");                 // jump to the live log so progress is visible
+    setTimeout(() => { pollAgent(); refreshLog(); }, 800);
+  } catch { $("agentBanner").textContent = "failed to start agent"; }
+}
+
+function fmtTotals(s) {
+  const t = s.totals || {};
+  const bits = [];
+  if (t.cost) bits.push("$" + Number(t.cost).toFixed(2));
+  if (t.tokens) bits.push(Math.round(t.tokens / 1000) + "k tok");
+  if (t.seconds) bits.push((t.seconds) + "s");
+  return bits.length ? " · " + bits.join(" · ") : "";
+}
+function fmtAgent(s) {
+  if (!s) return "agent idle";
+  if (s.state === "running") return `running… (${(s.results || []).length} done)`;
+  const c = s.counts || {}, parts = [];
+  if (c.built) parts.push(`${c.built} built`);
+  if (c.dropped) parts.push(`${c.dropped} dropped`);
+  if (c.needs_review) parts.push(`${c.needs_review} need review`);
+  if (c.failed) parts.push(`${c.failed} failed`);
+  return parts.length ? "last run: " + parts.join(" · ") + fmtTotals(s) : "agent idle";
+}
+
+let agentTimer = null;
+async function pollAgent() {
+  let s;
+  try { s = await api("/api/agent-status", "GET"); } catch { return; }
+  const running = s.state === "running";
+  $("agentDot").classList.toggle("running", running);
+  $("runBtn").disabled = running;
+  $("agentBanner").innerHTML = "";
+  $("agentBanner").append(document.createTextNode(fmtAgent(s) + " "));
+  const nr = (s.counts && s.counts.needs_review) || 0;
+  if (nr) {
+    const a = document.createElement("span");
+    a.className = "rev-link"; a.textContent = `· review ${nr} ›`;
+    a.onclick = filterNeedsReview;
+    $("agentBanner").appendChild(a);
+  }
+  if (running && !agentTimer) agentTimer = setInterval(pollAgent, 3000);
+  if (!running && agentTimer) { clearInterval(agentTimer); agentTimer = null; load(); }
+}
+
+function filterNeedsReview() {
+  ui.statuses = ["needs_review"];
+  buildStatusMenu(); render();
+}
+
+async function loadSchedule() {
+  let s;
+  try { s = await api("/api/schedule", "GET"); } catch { return; }
+  $("schedToggle").checked = !!s.loaded;
+  if (s.times && s.times.length) $("schedTimes").value = s.times.join(",");
+  if (s.concurrency) $("schedConc").value = s.concurrency;
+  $("schedStatus").textContent = s.loaded ? `on (${(s.times || []).join(", ")})`
+    : (s.installed ? "installed, not loaded" : "off");
+}
+
+async function saveSchedule() {
+  const enabled = $("schedToggle").checked;
+  const times = $("schedTimes").value.split(",").map(t => t.trim()).filter(Boolean);
+  const concurrency = Math.max(1, Math.min(8, parseInt($("schedConc").value) || 3));
+  $("schedStatus").textContent = "saving…";
+  try {
+    await api("/api/schedule", "POST",
+      enabled ? { action: "enable", times, concurrency } : { action: "disable" });
+  } catch { $("schedStatus").textContent = "failed"; return; }
+  loadSchedule();
+}
+
+$("runBtn").onclick = () => runAgent(false);
+$("dryBtn").onclick = () => runAgent(true);
+$("schedSave").onclick = saveSchedule;
+
+/* ---------- tabs + logs ---------- */
+let logTimer = null;
+function switchTab(t) {
+  $("tabQueue").hidden = t !== "queue";
+  $("tabLogs").hidden = t !== "logs";
+  $("tabBtnQueue").classList.toggle("active", t === "queue");
+  $("tabBtnLogs").classList.toggle("active", t === "logs");
+  if (t === "logs") { refreshLog(); loadRuns(); startLogAuto(); }
+  else stopLogAuto();
+}
+async function refreshLog() {
+  let d; try { d = await api("/api/agent-log", "GET"); } catch { return; }
+  const pane = $("logPane");
+  const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 60;
+  pane.textContent = (d.lines && d.lines.length) ? d.lines.join("\n") : "No log output yet.";
+  $("logLive").textContent = d.state === "running"
+    ? "● running " + (d.run_id || "")
+    : (d.run_id ? "idle · last run " + d.run_id + fmtTotals(d) : "");
+  if (atBottom) pane.scrollTop = pane.scrollHeight;
+}
+async function loadRuns() {
+  let runs; try { runs = await api("/api/runs", "GET"); } catch { return; }
+  const ul = $("runsList"); ul.innerHTML = "";
+  for (const r of runs) {
+    const li = document.createElement("li");
+    li.textContent = r.id;
+    li.onclick = () => openRun(r.id);
+    ul.appendChild(li);
+  }
+}
+async function openRun(id) {
+  let d; try { d = await api("/api/runs/" + encodeURIComponent(id), "GET"); } catch { return; }
+  $("logPane").textContent = d.markdown;
+  $("logLive").textContent = "run " + id + " (summary)";
+  $("logAuto").checked = false; stopLogAuto();
+}
+function startLogAuto() { if (!logTimer && $("logAuto").checked) logTimer = setInterval(refreshLog, 2500); }
+function stopLogAuto() { if (logTimer) { clearInterval(logTimer); logTimer = null; } }
+$("tabBtnQueue").onclick = () => switchTab("queue");
+$("tabBtnLogs").onclick = () => switchTab("logs");
+$("logRefresh").onclick = refreshLog;
+$("logAuto").onchange = e => { e.target.checked ? startLogAuto() : refreshLog(); if (!e.target.checked) stopLogAuto(); };
+
+buildStatusMenu();
+loadUI();
+setupColResize();
+load();
+pollAgent();
+loadSchedule();
+scheduleRev();
+</script>
+</body>
+</html>

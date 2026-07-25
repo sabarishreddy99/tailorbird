@@ -1,0 +1,45 @@
+# ============================================================
+# PERSONAL DATA — never commit. This repo is the reusable system,
+# not the candidate's résumés, knowledge base, or application history.
+# ============================================================
+
+# The live application queue + its backups/lock (156+ real applications).
+/job_queue.json
+/job_queue.json.lock
+/job_queue.backup-*.json
+# (job_queue.example.json IS committed as a template.)
+
+# The candidate knowledge base (name, contact, full history).
+/resumes/_index/LIBRARY.md
+# (resumes/_index/LIBRARY.example.md IS committed as a template.)
+
+# Every per-company résumé folder + root base résumés + submission PDFs.
+# (All .md/.docx/.pdf directly under resumes/ are personal base résumés.)
+/resumes/*/
+!/resumes/_assets/
+!/resumes/_index/
+/resumes/*.md
+/resumes/*.docx
+/resumes/*.pdf
+/resumes/pdfs/
+
+# Keep only the example inside _index (LIBRARY.md is ignored above).
+/resumes/_index/*
+!/resumes/_index/LIBRARY.example.md
+
+# ============================================================
+# Agent run artifacts (logs, status, staging — transient + may name companies).
+# ============================================================
+/agent/runs/*
+!/agent/runs/.gitkeep
+
+# ============================================================
+# Machine / editor / tooling noise.
+# ============================================================
+__pycache__/
+*.pyc
+*.lock
+.DS_Store
+# Local Claude Code settings (personal allow-rules / absolute paths), at any depth.
+settings.local.json
+**/.claude/settings.local.json
