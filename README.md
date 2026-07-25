@@ -10,8 +10,9 @@ It has three cooperating parts:
 
 1. **The `/resume-tailoring` skill** — a Claude Code skill that is the single source of
    truth for *how* a résumé is tailored (research, archetype selection, matching,
-   one-page generation, truthfulness rules). It lives outside this repo at
-   `~/.claude/skills/resume-tailoring/skills/resume-tailoring/SKILL.md`.
+   one-page generation, truthfulness rules). A copy is **vendored in `skill/`** so anyone
+   can read and edit it; at runtime Claude Code loads it from
+   `~/.claude/skills/resume-tailoring/`. See [The skill](#the-resume-tailoring-skill).
 2. **The agent** (`agent/`) — a pure-Python orchestrator that does all the mechanical,
    token-free work (fetch each JD, screen eligibility, assemble a compact context,
    commit results) and invokes the real skill **headlessly** (`claude -p`) only for the
@@ -39,6 +40,7 @@ in **`resumes/_index/LIBRARY.md`**, and every generated résumé is stored under
 - [The tracker UI](#the-tracker-ui)
 - [HTTP API reference](#http-api-reference)
 - [Component reference](#component-reference)
+- [The `/resume-tailoring` skill](#the-resume-tailoring-skill)
 - [Running it](#running-it)
 - [Safety guarantees](#safety-guarantees)
 - [Extending the system](#extending-the-system)
@@ -70,7 +72,7 @@ python3 agent/run.py --only "<url>"     # process a single queued URL
 |---|---|---|
 | **Python 3** | tracker + agent (standard library only, no `pip install`) | tested with the system/anaconda python |
 | **Claude Code CLI** (`claude`, v2.x) | the agent invokes the real skill headlessly | must be logged in; `claude -p` is used |
-| **`/resume-tailoring` skill** | defines all tailoring quality | at `~/.claude/skills/resume-tailoring/...` |
+| **`/resume-tailoring` skill** | defines all tailoring quality | vendored in `skill/`; install to `~/.claude/skills/resume-tailoring/` (see below) |
 | **Node.js** + global **`docx`** package | `resumes/_assets/gen_docx.js` builds the DOCX | `npm i -g docx` |
 | **Google Chrome** | headless PDF rendering in `build_resume.py` | path hard-coded to `/Applications/Google Chrome.app/...` |
 | **macOS** (for scheduling) | `launchctl` background schedule; `qlmanage` previews | the agent itself is cross-platform; only `schedule.py` is macOS-specific |
@@ -137,6 +139,11 @@ resume-tailoring/
 │   ├── tracker.py                 ← HTTP server (localhost:8765) + JSON API
 │   ├── tracker.html               ← single-file UI (HTML/CSS/JS, no build step)
 │   └── update_queue.py            ← CLI upsert into job_queue.json (used by the skill/agent)
+│
+├── skill/                         ← vendored /resume-tailoring skill (3rd-party, MIT)
+│   ├── skills/resume-tailoring/SKILL.md   ← the skill itself
+│   ├── matching-strategies.md · research-prompts.md · branching-questions.md
+│   ├── multi-job-workflow.md · docs/ · LICENSE · .claude-plugin/plugin.json
 │
 └── resumes/                       ← the résumé library
     ├── _index/LIBRARY.md          ← candidate knowledge base (facts, archetypes, boundaries…)
@@ -371,6 +378,46 @@ Chrome; auto-fits one page via a line-height density ladder, warns if it still o
 
 ---
 
+## The `/resume-tailoring` skill
+
+The tailoring quality — company research, résumé-archetype selection, content matching,
+one-page generation, and the truthfulness rules — is defined entirely by the
+`/resume-tailoring` Claude Code skill, **not** by this repo's Python. The agent invokes
+the *real* skill headlessly; the Python only pre-assembles context and commits results.
+
+A full copy is **vendored in `skill/`** so anyone can read, diff, or edit it:
+
+```
+skill/
+├── skills/resume-tailoring/SKILL.md   ← the skill (the workflow + rules)
+├── research-prompts.md                ← company/role research prompts
+├── matching-strategies.md             ← content-matching scoring
+├── branching-questions.md             ← experience-discovery dialogue
+├── multi-job-workflow.md              ← batch / express (autonomous) mode
+├── docs/                              ← design notes, schemas, test checklist
+├── .claude-plugin/plugin.json         ← plugin metadata
+└── LICENSE                            ← MIT
+```
+
+**Attribution / license:** this skill is a third-party open-source plugin
+(**MIT, by "Varun R"**, upstream `github.com/varunr89/resume-tailoring-skill`), vendored
+here for convenience and offline editing. Keep the `LICENSE` file with it. For upstream
+updates, pull from that repo.
+
+**Install / update it (so Claude Code and the agent can use it):**
+```bash
+# Copy the vendored skill into your Claude Code skills directory.
+mkdir -p ~/.claude/skills/resume-tailoring
+cp -R skill/. ~/.claude/skills/resume-tailoring/
+# Verify Claude Code sees it:  /resume-tailoring  should be listed as a skill.
+```
+
+**Edit it:** change `skill/skills/resume-tailoring/SKILL.md` (and the reference files),
+re-copy to `~/.claude/skills/…`, and every future agent run uses your version — no code
+change needed, because `agent/run.py` always calls the installed skill by name.
+
+---
+
 ## Running it
 
 **Interactively (the tracker):**
@@ -449,8 +496,8 @@ python3 resumes/_assets/build_resume.py resumes/Figma/<file>.md
 ## Known limitations
 
 - macOS-specific scheduling (`launchctl`) and Chrome path; the rest is portable.
-- The `/resume-tailoring` skill is an external dependency (in `~/.claude/skills/…`), not
-  vendored in this repo.
+- The `/resume-tailoring` skill is a vendored copy of a third-party plugin (`skill/`); the
+  canonical upstream is its own repo, so pull updates from there if you want the latest.
 - `pick_archetype` uses keyword overlap; the skill can override the pre-picked base, but a
   poor pick on an unusual JD may still need a human eye (that's what `needs_review` is for).
 - Telemetry depends on `claude -p --output-format json` fields; it degrades gracefully to
