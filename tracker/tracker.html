@@ -465,6 +465,12 @@
 
   footer { font-family: var(--font-mono); font-size: 11px; line-height: 1.7;
     border-top: 1px solid var(--line); margin-top: 22px; padding-top: 14px; }
+  .credits { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);
+    color: var(--muted); }
+  .credits strong { color: var(--ink); font-weight: 600; }
+  .credits a { color: var(--accent); text-decoration: none; }
+  .credits a:hover { text-decoration: underline; }
+  .credits .sepdot { opacity: .45; margin: 0 3px; }
 
   /* Resizable columns + horizontal scroll.
      JS sets each <col> width and the table's total width; the .tablewrap
@@ -721,6 +727,15 @@
     within the same column, <kbd>Tab</kbd> moves across the row, <kbd>Esc</kbd> leaves the field,
     <kbd>Alt</kbd>+<kbd>Enter</kbd> puts a real newline in notes, <kbd>/</kbd> jumps to search.
     Filters, sort, and theme survive a reload.
+    <div class="credits">
+      Created by <strong>Jaya Sabarish Reddy Remala</strong>
+      <span class="sepdot">·</span> © 2026
+      <span class="sepdot">·</span> Résumé tailoring by the
+      <a href="https://github.com/varunr89/resume-tailoring-skill" target="_blank" rel="noopener">resume-tailoring skill</a>
+      (MIT, Varun R)
+      <span class="sepdot">·</span>
+      <a href="https://github.com/USERNAME/resume-agent" target="_blank" rel="noopener" id="repoLink">source</a>
+    </div>
   </footer>
   </div><!-- /tabQueue -->
 
