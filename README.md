@@ -32,8 +32,10 @@ in **`resumes/_index/LIBRARY.md`**, and every generated résumé is stored under
 
 ## Table of contents
 
+- [Why Tailorbird (inspiration & who it helps)](#why-tailorbird-inspiration--who-it-helps)
 - [Quick start](#quick-start)
 - [Prerequisites](#prerequisites)
+- [Installation (step by step, per device)](#installation-step-by-step-per-device)
 - [Architecture](#architecture)
 - [Directory layout](#directory-layout)
 - [Data model](#data-model)
@@ -45,10 +47,50 @@ in **`resumes/_index/LIBRARY.md`**, and every generated résumé is stored under
 - [Component reference](#component-reference)
 - [The `/resume-tailoring` skill](#the-resume-tailoring-skill)
 - [Running it](#running-it)
+- [Customize it for you](#customize-it-for-you)
 - [Safety guarantees](#safety-guarantees)
 - [Extending the system](#extending-the-system)
 - [Troubleshooting](#troubleshooting)
 - [Known limitations](#known-limitations)
+- [License & contributing](#license--contributing)
+
+---
+
+## Why Tailorbird (inspiration & who it helps)
+
+**The idea.** Whether you get an interview should depend on your *experience and
+capabilities*, not on how much time you can spend rewriting a résumé for every posting.
+Tailoring one résumé per role is genuinely valuable — it materially raises callback rates —
+but doing it well, for dozens of roles, is slow, repetitive work that punishes people who
+have less time (working parents, people in demanding jobs, international applicants writing
+in a second language). Tailorbird automates that labor while keeping a hard line on
+honesty: it reframes and emphasizes what's genuinely yours, and it never invents
+experience.
+
+**The name.** The tailorbird stitches leaves together to build its nest. This one stitches
+*your* real experience to fit each job.
+
+**What inspired it.**
+- The tailoring *method* comes from the open-source `/resume-tailoring` Claude Code skill
+  (MIT, by Varun R). Tailorbird wraps that skill in automation rather than reinventing it,
+  so quality equals a careful, hand-guided session.
+- The **agent-over-skill** design (deterministic Python for the mechanical 80%, the model
+  only for authoring) came from watching where tokens and time actually went, and from the
+  skill's own "token optimization" guidance.
+- The **human-in-the-loop `needs_review` valve** exists because some calls (an unusual
+  level, a missing must-have, a borderline fit) genuinely need a person — so the agent
+  parks those instead of guessing.
+
+**Who benefits.**
+- **High-volume job seekers** — apply to many roles without the per-role grind; a batch that
+  took an evening now runs in minutes while you do something else.
+- **Career switchers** — the archetype/reframing engine surfaces transferable experience for
+  roles adjacent to your background.
+- **Non-native résumé writers** — get clean, idiomatic, role-matched phrasing without
+  fighting the blank page.
+- **Busy people** — schedule it; results and a review list are waiting when you're back.
+- **Anyone who values honesty** — truthfulness boundaries are enforced; it will flag a poor
+  fit rather than pad it.
 
 ---
 
@@ -82,6 +124,85 @@ python3 agent/run.py --only "<url>"     # process a single queued URL
 
 The tracker and agent are **stdlib-only Python** — nothing to install for them. The only
 installs are the global npm `docx` package and Chrome.
+
+---
+
+## Installation (step by step, per device)
+
+**Platform support at a glance:**
+
+| Platform | Tracker + agent + résumé build | Background schedule | Notes |
+|---|---|---|---|
+| **macOS** | ✅ full | ✅ `launchctl` | reference platform; works out of the box |
+| **Linux** | ✅ full (set Chrome path) | ⚠️ use `cron`/`systemd` instead of `schedule.py` | edit `CHROME` in `resumes/_assets/build_resume.py` |
+| **Windows** | ✅ via **WSL2** (recommended) | ⚠️ Task Scheduler instead of `schedule.py` | run everything inside WSL for the Unix tooling |
+
+### 1. Install the prerequisites
+
+**macOS** (with [Homebrew](https://brew.sh)):
+```bash
+brew install python node gh                 # Python 3, Node, GitHub CLI
+brew install --cask google-chrome           # headless PDF rendering
+npm install -g docx                         # DOCX generator dependency
+# Claude Code CLI (if not already installed): see https://claude.com/claude-code
+claude --version                            # confirm the `claude` CLI is on PATH + logged in
+```
+
+**Linux (Debian/Ubuntu):**
+```bash
+sudo apt update && sudo apt install -y python3 nodejs npm
+# install Google Chrome (or Chromium) and note its binary path
+sudo apt install -y chromium-browser        # or install google-chrome-stable
+npm install -g docx
+# then edit resumes/_assets/build_resume.py:  CHROME = "/usr/bin/chromium-browser"
+```
+
+**Windows:** install **WSL2** (Ubuntu), then follow the Linux steps inside WSL. Install
+Chrome in WSL or point `CHROME` at a reachable Chrome binary.
+
+You also need the **Claude Code CLI** logged in (`claude`) — that's what actually authors
+the résumés. See https://claude.com/claude-code.
+
+### 2. Get the code
+
+```bash
+git clone https://github.com/sabarishreddy99/tailorbird.git
+cd tailorbird
+```
+
+### 3. Install the tailoring skill
+
+Claude Code loads the skill from your skills directory, so copy the vendored copy there:
+```bash
+mkdir -p ~/.claude/skills/resume-tailoring
+cp -R skill/. ~/.claude/skills/resume-tailoring/
+# In Claude Code, /resume-tailoring should now be listed as a skill.
+```
+
+### 4. Create your library + base résumés (your data, not in the repo)
+
+The repo ships **sanitized templates**; your real data stays local and git-ignored.
+```bash
+cp resumes/_index/LIBRARY.example.md resumes/_index/LIBRARY.md
+# Edit LIBRARY.md: your Candidate Facts, the Role Archetypes table, Truthfulness
+# Boundaries, metrics, etc. (see "Customize it for you" below).
+# Add at least one base résumé .md per archetype under resumes/{Archetype}/ or the root,
+# matching the paths in your archetype table.
+```
+`job_queue.json` is created automatically on first run (or `cp job_queue.example.json
+job_queue.json`).
+
+### 5. Run it
+
+```bash
+python3 tracker/tracker.py     # opens http://localhost:8765
+```
+Paste a job URL, **Add to queue**, **Run agent**. First run confirms the whole chain
+works: fetch → screen → skill authoring → PDF/DOCX → tracker row.
+
+> **macOS Chrome path:** `build_resume.py` defaults to
+> `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. On Linux/Windows, set
+> `CHROME` in `resumes/_assets/build_resume.py` to your browser binary.
 
 ---
 
@@ -450,6 +571,44 @@ python3 resumes/_assets/build_resume.py resumes/Figma/<file>.md
 
 ---
 
+## Customize it for you
+
+Everything personal lives in a few git-ignored files, so making Tailorbird "yours"
+means editing those — not the code.
+
+- **Your résumé library — `resumes/_index/LIBRARY.md`** (copied from
+  `LIBRARY.example.md`). This is the single most important file; the skill reads it every
+  run. Fill in:
+  - **Candidate Facts** — verified, stable facts about you (name, contact, years, degrees).
+  - **Role Archetypes → Nearest Saved Résumé** — the table mapping each target archetype to
+    a base résumé file. Add/rename rows here to match the roles you apply for;
+    `library.pick_archetype` reads it directly.
+  - **Discovered Experiences** — skills/projects already confirmed, so the agent won't
+    re-interview you about them.
+  - **Truthfulness Boundaries** — the hard limits the skill will not cross. Tighten these and
+    the agent parks borderline cases in `needs_review` instead of stretching.
+  - **Style Rules, Core Metrics Bank, Summary Variants, Skills Category Blocks** — reusable
+    phrasing and canonical numbers the skill draws from.
+
+- **Base résumés — `resumes/{Archetype}/<file>.md`.** One Markdown base per archetype,
+  matching the paths in your archetype table. These are the starting points the skill
+  delta-edits per job.
+
+- **Résumé look (fonts, colors) — the `CSS` block in `resumes/_assets/build_resume.py`.**
+  The heading/accent navy is `#1F3864`, links are `#1155CC`, body font is Calibri at
+  `9.4pt`. Change those constants to restyle every generated PDF/DOCX.
+
+- **Chrome path — `CHROME` in `resumes/_assets/build_resume.py`** (line 25). Defaults to the
+  macOS Chrome location; point it at your browser binary on Linux/Windows.
+
+- **Screening strictness — `classify` in `agent/screen.py`.** Adjust the eligibility/fit
+  rules to change what gets `dropped` vs. `needs_review` vs. passed to authoring.
+
+- **New ATS host — `agent/ats.py`.** Add an adapter and register it in `ADAPTERS` (see
+  [Extending the system](#extending-the-system)).
+
+---
+
 ## Safety guarantees
 
 - The agent reads only `queued` rows and writes only `dropped` / `needs_review` /
@@ -505,3 +664,24 @@ python3 resumes/_assets/build_resume.py resumes/Figma/<file>.md
   poor pick on an unusual JD may still need a human eye (that's what `needs_review` is for).
 - Telemetry depends on `claude -p --output-format json` fields; it degrades gracefully to
   "no numbers" if the format changes.
+
+---
+
+## License & contributing
+
+**License.** Tailorbird is released under the [MIT License](LICENSE) — free to use, modify,
+and distribute. The one bundled exception is the vendored `/resume-tailoring` skill under
+`skill/`, a separate MIT-licensed work by Varun R; its own license lives at
+[`skill/LICENSE`](skill/LICENSE) and governs that directory. Pull skill updates from its
+[upstream repo](https://github.com/varunr89/resume-tailoring-skill).
+
+**Contributing.** Issues and pull requests are welcome — new ATS adapters, screening rules,
+archetypes, and portability fixes (Linux/Windows scheduling) are especially useful. Two
+ground rules:
+
+- **Keep the honesty invariant.** Nothing should let the system invent experience or bypass
+  the Truthfulness Boundaries; borderline cases route to `needs_review`, they don't get
+  padded.
+- **Never commit personal data.** Your real `LIBRARY.md`, base résumés, `job_queue.json`,
+  and generated documents are git-ignored — keep them that way. Only the sanitized
+  `*.example.*` templates belong in the repo.
