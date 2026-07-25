@@ -1,4 +1,7 @@
-# Resume Tailoring System
+# Tailorbird
+
+*Tailored résumés for every role, on autopilot.* (Named for the tailorbird, which stitches
+leaves into a nest, this one stitches your experience to fit each job.)
 
 An end-to-end system that turns a **job-posting URL** into a **tailored, one-page
 résumé** (PDF + DOCX) with factual integrity, and does it autonomously at scale. You
@@ -362,7 +365,7 @@ half-written file.
 
 ### `agent/schedule.py`
 `status()`, `enable(times, concurrency)`, `disable()`. Generates
-`~/Library/LaunchAgents/com.resume-agent.scheduler.plist` and applies it with
+`~/Library/LaunchAgents/com.tailorbird.scheduler.plist` and applies it with
 `launchctl bootstrap`/`bootout`. CLI: `python3 agent/schedule.py status|enable|disable`.
 
 ### `tracker/update_queue.py`

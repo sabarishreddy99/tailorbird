@@ -379,7 +379,7 @@ if __name__ == "__main__":
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
         url = f"http://localhost:{PORT}"
-        print(f"Job tracker running at {url}")
+        print(f"Tailorbird running at {url}")
         print(f"Data file: {QUEUE}")
         print("Ctrl-C to stop.")
         webbrowser.open(url)
