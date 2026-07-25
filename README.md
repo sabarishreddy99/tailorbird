@@ -124,7 +124,7 @@ and latency stay low while quality stays identical to a careful interactive sess
 ## Directory layout
 
 ```
-resume-tailoring/
+tailorbird/
 ├── README.md                      ← this file
 ├── job_queue.json                 ← the live application queue (one record per role)
 ├── job_queue.json.lock            ← advisory lock (flock) for concurrent writers

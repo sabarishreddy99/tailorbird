@@ -472,6 +472,24 @@
   .credits a:hover { text-decoration: underline; }
   .credits .sepdot { opacity: .45; margin: 0 3px; }
 
+  /* About tab */
+  .about { max-width: 980px; padding: 4px 2px 20px; }
+  .about-title { font-family: var(--font-display); font-size: 25px; margin: 4px 0 8px; }
+  .about-lead { color: var(--muted); font-size: 15px; line-height: 1.65; max-width: 740px; margin-bottom: 22px; }
+  .about-lead strong { color: var(--ink); }
+  .about-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 12px; margin-bottom: 8px; }
+  .about .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 15px; box-shadow: var(--shadow-sm); font-size: 13.5px; line-height: 1.55; color: var(--muted); }
+  .about .card h3 { font-family: var(--font-body); font-size: 14.5px; color: var(--ink); margin: 0 0 6px; font-weight: 600; }
+  .about .card b { color: var(--ink); }
+  .about-h { font-family: var(--font-display); font-size: 18px; margin: 26px 0 10px; }
+  .about-steps { color: var(--muted); font-size: 14px; line-height: 1.75; padding-left: 20px; max-width: 740px; margin: 0; }
+  .about-steps b { color: var(--ink); }
+  .about-legend { font-family: var(--font-mono); font-size: 12px; line-height: 2.1; }
+  .about .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px;
+    color: var(--st-c); border: 1px solid var(--st-c);
+    background: color-mix(in srgb, var(--st-c) 12%, transparent); }
+
   /* Resizable columns + horizontal scroll.
      JS sets each <col> width and the table's total width; the .tablewrap
      scrolls on X whenever the total exceeds the viewport. */
@@ -634,6 +652,7 @@
   <div class="tabs">
     <button class="tab active" id="tabBtnQueue">Queue</button>
     <button class="tab" id="tabBtnLogs">Logs</button>
+    <button class="tab" id="tabBtnAbout">About</button>
   </div>
 
   <div id="tabQueue">
@@ -769,6 +788,93 @@
       </div>
     </div>
   </div><!-- /tabLogs -->
+
+  <div id="tabAbout" hidden>
+    <div class="about">
+      <h2 class="about-title">What Tailorbird does for you</h2>
+      <p class="about-lead">
+        Tailorbird turns a job-posting link into a polished, one-page résumé tailored to
+        that exact role, and does it for a whole queue of jobs on its own. Your job is to
+        paste links and hit <strong>Run agent</strong>; it does the reading, screening,
+        writing, and formatting, and keeps everything truthful.
+      </p>
+
+      <div class="about-grid">
+        <div class="card">
+          <h3>📥 Fetches any job posting</h3>
+          Paste a URL from almost any careers site (Greenhouse, Ashby, Lever, Workday,
+          Apple, Amazon, and more). Tailorbird pulls the full job description for you, no
+          copy-pasting.
+        </div>
+        <div class="card">
+          <h3>🔎 Screens before it writes</h3>
+          It checks each role for deal-breakers, visa sponsorship, security clearance,
+          citizenship, or pay below your bar, and drops the dead ends automatically so you
+          never spend effort on a role you can't take.
+        </div>
+        <div class="card">
+          <h3>✍️ Tailors a résumé per role</h3>
+          For each viable role it writes a one-page résumé (PDF + DOCX) matched to the job,
+          starting from your best-fitting base and emphasizing what's relevant, without ever
+          inventing experience.
+        </div>
+        <div class="card">
+          <h3>⚠️ Flags the judgment calls</h3>
+          When a role is borderline (an unusual level, a missing must-have, low fit), it
+          marks it <b style="color:var(--c-review)">needs&nbsp;review</b> with a reason
+          instead of guessing, and you decide with one click: <b>Build</b> or <b>Drop</b>.
+        </div>
+        <div class="card">
+          <h3>⚡ Runs in parallel, or on a schedule</h3>
+          Process many roles at once (you set how many), on demand from the
+          <b>Run agent</b> button or automatically on a daily schedule you control from the
+          <b>Schedule</b> panel, even while your laptop sits idle.
+        </div>
+        <div class="card">
+          <h3>📊 Tracks every application</h3>
+          One table for the whole search: date, company, role, fit %, résumé PDF, and
+          status. Open or copy any résumé's path in a click, filter, sort, search, and move
+          roles through <b>applied → interviewing → offer</b> as you go.
+        </div>
+        <div class="card">
+          <h3>🪵 Shows its work</h3>
+          The <b>Logs</b> tab streams live progress and past-run summaries, with the cost
+          and time each run took, so nothing is a black box.
+        </div>
+        <div class="card">
+          <h3>🔒 Keeps your data yours</h3>
+          Everything runs locally on your machine. Your résumés, knowledge base, and
+          application history never leave your disk.
+        </div>
+      </div>
+
+      <h3 class="about-h">How to use it</h3>
+      <ol class="about-steps">
+        <li>Paste one or more job URLs in the box up top and <b>Add to queue</b>.</li>
+        <li>Click <b>Run agent</b> (set <em>Parallel</em> higher to go faster).</li>
+        <li>Watch the <b>Logs</b> tab; results land back in the <b>Queue</b> table.</li>
+        <li>Resolve any <b>needs review</b> rows (Build / Drop), then open the <b>PDF</b>
+            for the ready ones and apply.</li>
+        <li>Mark each row <b>applied</b> and beyond as you progress, that part stays yours.</li>
+      </ol>
+
+      <h3 class="about-h">Status lifecycle</h3>
+      <p class="about-legend">
+        <span class="pill" style="--st-c:var(--c-queued)">queued</span> →
+        <span class="pill" style="--st-c:var(--c-review)">needs&nbsp;review</span> →
+        <span class="pill" style="--st-c:var(--c-resume)">resume&nbsp;ready</span> →
+        <span class="pill" style="--st-c:var(--c-applied)">applied</span> →
+        <span class="pill" style="--st-c:var(--c-screen)">screen</span> →
+        <span class="pill" style="--st-c:var(--c-interview)">interviewing</span> →
+        <span class="pill" style="--st-c:var(--c-offer)">offer</span> /
+        <span class="pill" style="--st-c:var(--c-bad)">rejected</span> /
+        <span class="pill" style="--st-c:var(--c-bad)">dropped</span>
+        <br><span style="color:var(--muted)">Tailorbird only ever sets
+        <em>dropped</em>, <em>needs&nbsp;review</em>, and <em>resume&nbsp;ready</em>,
+        everything past submission is yours.</span>
+      </p>
+    </div>
+  </div><!-- /tabAbout -->
 
 </div>
 
@@ -1794,8 +1900,10 @@ let logTimer = null;
 function switchTab(t) {
   $("tabQueue").hidden = t !== "queue";
   $("tabLogs").hidden = t !== "logs";
+  $("tabAbout").hidden = t !== "about";
   $("tabBtnQueue").classList.toggle("active", t === "queue");
   $("tabBtnLogs").classList.toggle("active", t === "logs");
+  $("tabBtnAbout").classList.toggle("active", t === "about");
   if (t === "logs") { refreshLog(); loadRuns(); startLogAuto(); }
   else stopLogAuto();
 }
@@ -1829,6 +1937,7 @@ function startLogAuto() { if (!logTimer && $("logAuto").checked) logTimer = setI
 function stopLogAuto() { if (logTimer) { clearInterval(logTimer); logTimer = null; } }
 $("tabBtnQueue").onclick = () => switchTab("queue");
 $("tabBtnLogs").onclick = () => switchTab("logs");
+$("tabBtnAbout").onclick = () => switchTab("about");
 $("logRefresh").onclick = refreshLog;
 $("logAuto").onchange = e => { e.target.checked ? startLogAuto() : refreshLog(); if (!e.target.checked) stopLogAuto(); };
 
