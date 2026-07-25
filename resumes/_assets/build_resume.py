@@ -20,9 +20,41 @@ Canonical MD format expected:
 
 Style rules baked in: Calibri, 1-page-first density retry (line-height 1.13 -> 1.10 -> 1.07).
 """
-import sys, re, json, subprocess, os, html as htmllib
+import sys, re, json, subprocess, os, shutil, tempfile, html as htmllib
 
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+def find_chrome():
+    """Locate a Chrome/Chromium binary across platforms.
+
+    Priority: TAILORBIRD_CHROME / CHROME env var → common install paths
+    (macOS, Linux, Windows) → anything Chrome-like on PATH. Set the env var to
+    override, e.g.  export TAILORBIRD_CHROME="/usr/bin/chromium-browser".
+    """
+    override = os.environ.get("TAILORBIRD_CHROME") or os.environ.get("CHROME")
+    if override and os.path.exists(override):
+        return override
+    candidates = [
+        # macOS
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        # Linux
+        "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
+        "/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium",
+        # Windows
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    for name in ("google-chrome", "google-chrome-stable", "chromium",
+                 "chromium-browser", "chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
+    sys.exit("ERROR: could not find Chrome/Chromium. Install it, or set "
+             "TAILORBIRD_CHROME to the browser binary path.")
+
+CHROME = find_chrome()
 NODE_GEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gen_docx.js")
 
 CSS = """
@@ -194,11 +226,16 @@ def main():
     os.makedirs(outdir, exist_ok=True)
     doc = parse(open(md_path).read())
 
+    # Unique scratch files (per-process temp dir) so parallel builds never
+    # collide and it works on any OS (no hardcoded /tmp).
+    scratch = tempfile.mkdtemp(prefix="tailorbird_build_")
+    html_path = os.path.join(scratch, "resume.html")
+    json_path = os.path.join(scratch, "content.json")
+
     # PDF density ladder: pick the MOST GENEROUS line-height that still fits 1 page.
     # This both fills the page visually and signals content volume.
     pdf_path = os.path.join(outdir, base + ".pdf")
     for lh in ("1.3", "1.25", "1.2", "1.15", "1.13", "1.1", "1.07"):
-        html_path = "/tmp/_resume_build.html"
         open(html_path, "w").write(render_html(doc, lh))
         subprocess.run([CHROME, "--headless", "--disable-gpu", "--no-pdf-header-footer",
                         "--print-to-pdf=" + pdf_path, html_path],
@@ -214,7 +251,6 @@ def main():
               "content (restore a trimmed entry, add a project or bullets) for a tight full page." % lh)
 
     # DOCX via node generator
-    json_path = "/tmp/_resume_content.json"
     docx_doc = dict(doc)
     for sec in docx_doc["sections"]:
         if sec["type"] == "paragraph":
@@ -229,6 +265,7 @@ def main():
     open(json_path, "w").write(json.dumps(docx_doc))
     r = subprocess.run(["node", NODE_GEN, json_path], capture_output=True, text=True)
     print("DOCX:", docx_path if r.returncode == 0 else "FAILED: " + r.stderr[-500:])
+    shutil.rmtree(scratch, ignore_errors=True)
 
 if __name__ == "__main__":
     main()

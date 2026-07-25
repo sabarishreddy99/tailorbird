@@ -1,9 +1,31 @@
 // gen_docx.js - generic resume DOCX generator. Called by build_resume.py.
 // Usage: node gen_docx.js <content.json>   (JSON produced by build_resume.py)
 const fs = require("fs");
-const modPath = "/opt/homebrew/lib/node_modules/docx";
+
+// Resolve the 'docx' module across platforms and install layouts:
+//   TAILORBIRD_DOCX env override → local require → `npm root -g` → common paths.
+function loadDocx() {
+  const path = require("path");
+  const candidates = [];
+  if (process.env.TAILORBIRD_DOCX) candidates.push(process.env.TAILORBIRD_DOCX);
+  candidates.push("docx"); // local node_modules or NODE_PATH
+  try {
+    const root = require("child_process").execSync("npm root -g", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    if (root) candidates.push(path.join(root, "docx"));
+  } catch (e) { /* npm not on PATH; fall through */ }
+  candidates.push(
+    "/opt/homebrew/lib/node_modules/docx",   // macOS Apple Silicon (Homebrew)
+    "/usr/local/lib/node_modules/docx",      // macOS Intel / Linux
+    "/usr/lib/node_modules/docx",            // Linux distro npm
+  );
+  for (const c of candidates) {
+    try { return require(c); } catch (e) { /* try next */ }
+  }
+  console.error("ERROR: cannot find the 'docx' module. Install it with:  npm install -g docx");
+  process.exit(1);
+}
 const { Document, Packer, Paragraph, TextRun, ExternalHyperlink, AlignmentType,
-        LevelFormat, TabStopType, TabStopPosition, BorderStyle } = require(modPath);
+        LevelFormat, TabStopType, TabStopPosition, BorderStyle } = loadDocx();
 
 const FONT = "Calibri";
 const BODY = 20;   // 10pt

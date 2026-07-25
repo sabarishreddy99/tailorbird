@@ -118,8 +118,8 @@ python3 agent/run.py --only "<url>"     # process a single queued URL
 | **Python 3** | tracker + agent (standard library only, no `pip install`) | tested with the system/anaconda python |
 | **Claude Code CLI** (`claude`, v2.x) | the agent invokes the real skill headlessly | must be logged in; `claude -p` is used |
 | **`/resume-tailoring` skill** | defines all tailoring quality | vendored in `skill/`; install to `~/.claude/skills/resume-tailoring/` (see below) |
-| **Node.js** + global **`docx`** package | `resumes/_assets/gen_docx.js` builds the DOCX | `npm i -g docx` |
-| **Google Chrome** | headless PDF rendering in `build_resume.py` | path hard-coded to `/Applications/Google Chrome.app/...` |
+| **Node.js** + global **`docx`** package | `resumes/_assets/gen_docx.js` builds the DOCX | `npm i -g docx` (auto-located; override with `TAILORBIRD_DOCX`) |
+| **Google Chrome / Chromium** | headless PDF rendering in `build_resume.py` | auto-detected on macOS/Linux/Windows; override with `TAILORBIRD_CHROME` |
 | **macOS** (for scheduling) | `launchctl` background schedule; `qlmanage` previews | the agent itself is cross-platform; only `schedule.py` is macOS-specific |
 
 The tracker and agent are **stdlib-only Python** — nothing to install for them. The only
@@ -134,7 +134,7 @@ installs are the global npm `docx` package and Chrome.
 | Platform | Tracker + agent + résumé build | Background schedule | Notes |
 |---|---|---|---|
 | **macOS** | ✅ full | ✅ `launchctl` | reference platform; works out of the box |
-| **Linux** | ✅ full (set Chrome path) | ⚠️ use `cron`/`systemd` instead of `schedule.py` | edit `CHROME` in `resumes/_assets/build_resume.py` |
+| **Linux** | ✅ full | ⚠️ use `cron`/`systemd` instead of `schedule.py` | Chrome/Chromium auto-detected; override with `TAILORBIRD_CHROME` if needed |
 | **Windows** | ✅ via **WSL2** (recommended) | ⚠️ Task Scheduler instead of `schedule.py` | run everything inside WSL for the Unix tooling |
 
 ### 1. Install the prerequisites
@@ -154,11 +154,12 @@ sudo apt update && sudo apt install -y python3 nodejs npm
 # install Google Chrome (or Chromium) and note its binary path
 sudo apt install -y chromium-browser        # or install google-chrome-stable
 npm install -g docx
-# then edit resumes/_assets/build_resume.py:  CHROME = "/usr/bin/chromium-browser"
+# build_resume.py auto-detects Chromium/Chrome on PATH. If yours is in an unusual
+# location: export TAILORBIRD_CHROME="/path/to/your/chrome"
 ```
 
 **Windows:** install **WSL2** (Ubuntu), then follow the Linux steps inside WSL. Install
-Chrome in WSL or point `CHROME` at a reachable Chrome binary.
+Chrome in WSL, or set `TAILORBIRD_CHROME` to a reachable Chrome binary.
 
 You also need the **Claude Code CLI** logged in (`claude`) — that's what actually authors
 the résumés. See https://claude.com/claude-code.
@@ -183,12 +184,28 @@ cp -R skill/. ~/.claude/skills/resume-tailoring/
 
 The repo ships **sanitized templates**; your real data stays local and git-ignored.
 ```bash
+# a) Your knowledge base:
 cp resumes/_index/LIBRARY.example.md resumes/_index/LIBRARY.md
 # Edit LIBRARY.md: your Candidate Facts, the Role Archetypes table, Truthfulness
 # Boundaries, metrics, etc. (see "Customize it for you" below).
-# Add at least one base résumé .md per archetype under resumes/{Archetype}/ or the root,
-# matching the paths in your archetype table.
+
+# b) At least one base résumé per archetype, in the canonical Markdown format.
+#    Copy the annotated template and fill in YOUR experience:
+mkdir -p resumes/Backend
+cp resumes/_assets/RESUME_TEMPLATE.example.md resumes/Backend/base_backend.md
+#    The template documents the exact format build_resume.py parses. The folder/file
+#    names must match the paths in your Role Archetypes table in LIBRARY.md.
+
+# c) Confirm the build tooling works end-to-end:
+python3 resumes/_assets/build_resume.py resumes/Backend/base_backend.md
+#    → writes base_backend.pdf (auto-fit to one page) + base_backend.docx next to it.
 ```
+
+> **Tip — let the skill bootstrap your library.** Instead of filling `LIBRARY.md` by hand,
+> open Claude Code in the repo and run `/resume-tailoring` with your current résumé; the
+> skill interviews you, discovers experience, and can populate the archetypes, metrics,
+> and boundaries for you.
+
 `job_queue.json` is created automatically on first run (or `cp job_queue.example.json
 job_queue.json`).
 
@@ -200,9 +217,10 @@ python3 tracker/tracker.py     # opens http://localhost:8765
 Paste a job URL, **Add to queue**, **Run agent**. First run confirms the whole chain
 works: fetch → screen → skill authoring → PDF/DOCX → tracker row.
 
-> **macOS Chrome path:** `build_resume.py` defaults to
-> `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`. On Linux/Windows, set
-> `CHROME` in `resumes/_assets/build_resume.py` to your browser binary.
+> **Chrome detection:** `build_resume.py` auto-finds Google Chrome or Chromium on
+> macOS, Linux, and Windows. If your binary lives somewhere unusual, set
+> `TAILORBIRD_CHROME` (e.g. `export TAILORBIRD_CHROME="/usr/bin/chromium-browser"`) —
+> no source edit needed.
 
 ---
 
@@ -273,12 +291,16 @@ tailorbird/
     ├── _index/LIBRARY.md          ← candidate knowledge base (facts, archetypes, boundaries…)
     ├── _assets/
     │   ├── build_resume.py        ← one-command MD → PDF + DOCX
-    │   └── gen_docx.js            ← docx-js generator (needs global npm 'docx')
+    │   ├── gen_docx.js            ← docx-js generator (needs global npm 'docx')
+    │   └── RESUME_TEMPLATE.example.md  ← annotated base-résumé template (copy to start)
     ├── {Company}/                 ← per-company: <Name>_<Company>_<Role>_Resume.md/.docx/_Report.md
     └── pdfs/{Company}/            ← submission-ready PDFs
 ```
 
-There are ~85 company folders and ~107 generated PDFs at time of writing.
+A **fresh clone ships only the reusable system** — code, the vendored skill, and the
+`*.example.*` templates. The per-company résumé folders, `pdfs/`, your real `LIBRARY.md`,
+and `job_queue.json` are all git-ignored; they appear locally as you use the tool (the
+author's own tree, for reference, holds ~85 company folders and ~100+ PDFs).
 
 ---
 
@@ -498,7 +520,9 @@ and refuses to regress a status. This is how both the skill and the agent write 
 `python3 resumes/_assets/build_resume.py <resume.md> [--outdir DIR]` → PDF (headless
 Chrome; auto-fits one page via a line-height density ladder, warns if it still overflows)
 + DOCX (via `gen_docx.js`). Prints an authoritative text signal (`N page(s)`,
-`UNDERFILLED`, `WARNING`) that the agent's gate relies on.
+`UNDERFILLED`, `WARNING`) that the agent's gate relies on. Chrome is auto-detected
+(override: `TAILORBIRD_CHROME`). The canonical input format is documented in
+`resumes/_assets/RESUME_TEMPLATE.example.md` — copy it to start a base résumé.
 
 ---
 
@@ -598,8 +622,9 @@ means editing those — not the code.
   The heading/accent navy is `#1F3864`, links are `#1155CC`, body font is Calibri at
   `9.4pt`. Change those constants to restyle every generated PDF/DOCX.
 
-- **Chrome path — `CHROME` in `resumes/_assets/build_resume.py`** (line 25). Defaults to the
-  macOS Chrome location; point it at your browser binary on Linux/Windows.
+- **Chrome path — the `TAILORBIRD_CHROME` env var.** `build_resume.py` auto-detects Chrome
+  or Chromium on macOS/Linux/Windows; only set this if yours is in an unusual place. (The
+  DOCX module is likewise auto-located; override with `TAILORBIRD_DOCX` if needed.)
 
 - **Screening strictness — `classify` in `agent/screen.py`.** Adjust the eligibility/fit
   rules to change what gets `dropped` vs. `needs_review` vs. passed to authoring.
@@ -642,8 +667,9 @@ means editing those — not the code.
 
 ## Troubleshooting
 
-- **Résumé PDF fails to build** — ensure Chrome is installed at the hard-coded path and the
-  global npm `docx` package is present (`npm i -g docx`).
+- **Résumé PDF fails to build** — ensure Chrome/Chromium is installed (set
+  `TAILORBIRD_CHROME` if it's in an unusual location) and the global npm `docx` package is
+  present (`npm i -g docx`; set `TAILORBIRD_DOCX` to its path if `npm root -g` isn't found).
 - **Agent build "failed: skill produced no result file"** — the `claude` CLI must be logged
   in and on `PATH`; the prompt is passed via stdin (not as an argv positional).
 - **Duplicate company folder** — macOS is case-insensitive; keep folder names Title-Case
@@ -657,7 +683,9 @@ means editing those — not the code.
 
 ## Known limitations
 
-- macOS-specific scheduling (`launchctl`) and Chrome path; the rest is portable.
+- Only the background **scheduler** (`schedule.py`, `launchctl`) is macOS-specific; use
+  `cron`/`systemd` (Linux) or Task Scheduler (Windows) to run `agent/run.py --once` on a
+  timer. Everything else (tracker, agent, PDF/DOCX build) is cross-platform.
 - The `/resume-tailoring` skill is a vendored copy of a third-party plugin (`skill/`); the
   canonical upstream is its own repo, so pull updates from there if you want the latest.
 - `pick_archetype` uses keyword overlap; the skill can override the pre-picked base, but a
