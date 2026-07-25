@@ -176,7 +176,7 @@ The single source of truth for application lifecycle. Shape:
       "status": "resume_ready",
       "url": "https://boards.greenhouse.io/figma/jobs/5691911004",
       "notes": "agent: strong full-stack fit",
-      "pdf": "Figma/Jaya_..._Resume.pdf"        // relative to resumes/pdfs (added on build)
+      "pdf": "Figma/Name_..._Resume.pdf"        // relative to resumes/pdfs (added on build)
     }
   ]
 }
@@ -362,7 +362,7 @@ half-written file.
 
 ### `agent/schedule.py`
 `status()`, `enable(times, concurrency)`, `disable()`. Generates
-`~/Library/LaunchAgents/com.jaya.resume-agent.plist` and applies it with
+`~/Library/LaunchAgents/com.resume-agent.scheduler.plist` and applies it with
 `launchctl bootstrap`/`bootout`. CLI: `python3 agent/schedule.py status|enable|disable`.
 
 ### `tracker/update_queue.py`

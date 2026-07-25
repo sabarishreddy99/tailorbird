@@ -73,7 +73,7 @@ def archetype_rows():
 
 def resolve_base(base_path):
     """Turn an archetype base like 'Apple/', 'Snap/...Full_Stack_L4', or
-    'Jaya_..._Resume_Backend.md' into a concrete resume .md path."""
+    'Name_..._Resume_Backend.md' into a concrete resume .md path."""
     bp = base_path.strip()
     # Company folder -> first non-report .md
     folder = RESUMES / bp.rstrip("/")
@@ -96,7 +96,7 @@ def resolve_base(base_path):
             mds = [p for p in f.glob("*.md") if "Report" not in p.name]
             if mds:
                 return mds[0]
-    # Root file with an ellipsis, e.g. Jaya_..._Resume_Backend.md
+    # Root file with an ellipsis, e.g. Name_..._Resume_Backend.md
     if bp.endswith(".md"):
         pat = "*" + re.sub(r"^.*\.\.\._?", "", bp)
         for p in RESUMES.glob(pat):

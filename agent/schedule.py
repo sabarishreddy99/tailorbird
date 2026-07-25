@@ -2,7 +2,7 @@
 """
 schedule.py - manage the resume agent's macOS launchd schedule.
 
-Generates / installs / removes ~/Library/LaunchAgents/com.jaya.resume-agent.plist
+Generates / installs / removes ~/Library/LaunchAgents/com.resume-agent.scheduler.plist
 so the agent runs on a calendar schedule with no Claude window open. Driven by
 the tracker UI's Schedule panel (/api/schedule) and usable from the CLI:
 
@@ -21,7 +21,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-LABEL = "com.jaya.resume-agent"
+LABEL = "com.resume-agent.scheduler"
 ROOT = Path(__file__).resolve().parent.parent
 RUN_PY = ROOT / "agent" / "run.py"
 LOG = ROOT / "agent" / "runs" / "launchd.log"
