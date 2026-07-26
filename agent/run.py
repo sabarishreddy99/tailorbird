@@ -35,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -56,17 +57,19 @@ FETCH_POOL = 8
 SKILL_TIMEOUT = 900  # 15 min per role
 
 LOGFILE = None  # set once run_id is known; the Logs tab tails this per-run file.
+_LOG_LOCK = threading.Lock()  # run_skill workers stream events -> concurrent log() writers.
 
 
 def log(msg):
     line = f"[{datetime.now():%H:%M:%S}] {msg}"
-    print(line, flush=True)
-    if LOGFILE:
-        try:
-            with open(LOGFILE, "a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-        except Exception:
-            pass
+    with _LOG_LOCK:
+        print(line, flush=True)
+        if LOGFILE:
+            try:
+                with open(LOGFILE, "a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+            except Exception:
+                pass
 
 
 def slug(s):
@@ -161,17 +164,21 @@ def style_violations(md_rel):
     return out
 
 
-def parse_usage(stdout):
-    """Best-effort telemetry from `claude -p --output-format json`.
+def parse_usage(env):
+    """Best-effort telemetry from the final stream-json `result` event.
 
-    Reports the meaningful numbers: `cost` (USD) and `new_tok` = fresh input +
-    output + cache-creation (full-price tokens). Cache *reads* are counted
-    separately as `cache_tok` because they are cheap (~0.1x) and, in an agentic
-    loop, balloon far above the real work if summed into one 'tokens' figure.
+    Accepts the already-parsed `result` event dict (or, for back-compat, a raw
+    JSON string). Reports the meaningful numbers: `cost` (USD) and `new_tok` =
+    fresh input + output + cache-creation (full-price tokens). Cache *reads* are
+    counted separately as `cache_tok` because they are cheap (~0.1x) and, in an
+    agentic loop, balloon far above the real work if summed into one figure.
     """
-    try:
-        env = json.loads(stdout)
-    except (json.JSONDecodeError, TypeError):
+    if isinstance(env, str):
+        try:
+            env = json.loads(env)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    if not isinstance(env, dict):
         return {}
     u = env.get("usage") or {}
     inp = u.get("input_tokens", 0) or 0
@@ -185,6 +192,87 @@ def parse_usage(stdout):
         "turns": env.get("num_turns"),
         "cost": env.get("total_cost_usd"),
     }
+
+
+def _describe_tool(name, inp):
+    """Map a streamed tool_use block to one short human verb, or None to skip."""
+    b = os.path.basename
+    if name == "WebSearch":
+        return f"🔎 web search: {(inp.get('query') or '').strip()[:70]}"
+    if name == "WebFetch":
+        return f"🔎 fetch: {(inp.get('url') or '').strip()[:70]}"
+    if name == "Read":
+        return f"📖 read {b(inp.get('file_path', '') or '')}"
+    if name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        return f"✍️  edit {b(inp.get('file_path', '') or '')}"
+    if name == "Bash":
+        cmd = (inp.get("command") or "").strip()
+        if "build_resume.py" in cmd:
+            return "🖨️  building PDF/DOCX"
+        return f"⚙️  {cmd[:60]}"
+    if name in ("Grep", "Glob"):
+        return "🔍 searching files"
+    if name == "Task":
+        return "🤖 sub-agent"
+    return None  # Skill, TodoWrite, etc. -> noise, skip
+
+
+def _stream_skill(cmd, prompt, company):
+    """Run the claude CLI streaming, echoing a concise line per tool/step to the
+    run log as it happens. Returns (result_event_dict_or_None, counts, killed).
+    Enforces SKILL_TIMEOUT by killing the process."""
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1, cwd=str(ROOT))
+    killed = {"v": False}
+
+    def _kill():
+        killed["v"] = True
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+    timer = threading.Timer(SKILL_TIMEOUT, _kill)
+    timer.start()
+    result_evt, counts, tail = None, {"research": 0, "builds": 0}, []
+    try:
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+        for line in proc.stdout:
+            if not line.strip():
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                tail.append(line.strip()[:200])
+                del tail[:-8]  # keep only the last few non-JSON lines for diagnostics
+                continue
+            etype = evt.get("type")
+            if etype == "assistant":
+                for block in (evt.get("message") or {}).get("content") or []:
+                    bt = block.get("type")
+                    if bt == "tool_use":
+                        name, inp = block.get("name", ""), block.get("input") or {}
+                        if name in ("WebSearch", "WebFetch"):
+                            counts["research"] += 1
+                        elif name == "Bash" and "build_resume.py" in (inp.get("command") or ""):
+                            counts["builds"] += 1
+                        desc = _describe_tool(name, inp)
+                        if desc:
+                            log(f"    [{company}] {desc}")
+                    elif bt == "text":
+                        t = (block.get("text") or "").strip().split("\n", 1)[0]
+                        if len(t) > 2:
+                            log(f"    [{company}] 💭 {t[:90]}")
+            elif etype == "result":
+                result_evt = evt
+    finally:
+        timer.cancel()
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            pass
+    return result_evt, counts, killed["v"], tail
 
 
 def run_skill(row, job, run_id):
@@ -202,8 +290,10 @@ def run_skill(row, job, run_id):
     # Pre-assemble the skill's own token-efficient inputs (pure Python, 0 tokens).
     kit = library.build_kit(job.get("text", ""), row.get("company", ""))
     kit_path.write_text(kit["kit_text"], encoding="utf-8")
-    research = ("Do the skill's EXPAND research for this role (unfamiliar company / new "
-                "archetype / low projected coverage)."
+    research = ("Research ONLY what the JD itself does not tell you and that materially "
+                "affects tailoring (an unfamiliar product/team, domain jargon, or a genuine "
+                "coverage gap). The full JD is already provided, so do NOT spend searches on "
+                "generic company background — keep it to 1-2 targeted lookups at most."
                 if kit["research"] else
                 "SKIP web research: this maps cleanly to a known archetype and familiar "
                 "company. Tailor from the JD + kit unless you find a real gap.")
@@ -249,17 +339,20 @@ If you cannot honestly build it (ambiguous eligibility, a central-language absen
 projected coverage below ~65%), set outcome="needs_review" with the reason and still write
 the JSON. Never fabricate experience."""
 
-    cmd = [claude_bin(), "-p", "--output-format", "json",
+    company = row.get("company") or (job.get("title") or "role")
+    cmd = [claude_bin(), "-p", "--output-format", "stream-json", "--verbose",
            "--permission-mode", "bypassPermissions", "--add-dir", str(ROOT)]
-    try:
-        res = subprocess.run(cmd, input=prompt, cwd=str(ROOT), capture_output=True,
-                             text=True, timeout=SKILL_TIMEOUT)
-    except subprocess.TimeoutExpired:
+    result_evt, counts, killed, tail = _stream_skill(cmd, prompt, company)
+    if killed:
         return {"outcome": "failed", "reason": "skill run timed out", "telem": {}}
 
-    telem = parse_usage(res.stdout)
+    telem = parse_usage(result_evt)
+    telem["research"], telem["builds"] = counts["research"], counts["builds"]
     if not out_path.exists():
-        return {"outcome": "failed", "reason": "skill produced no result file", "telem": telem}
+        reason = "skill produced no result file"
+        if tail:
+            reason += f" ({tail[-1]})"
+        return {"outcome": "failed", "reason": reason, "telem": telem}
     try:
         out = json.loads(out_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -376,7 +469,8 @@ def main():
                                 "outcome": outcome, "reason": reason, "coverage": cov,
                                 "tokens": telem.get("new_tok"), "cache_tokens": telem.get("cache_tok"),
                                 "cost": telem.get("cost"), "seconds": telem.get("sec"),
-                                "turns": telem.get("turns")})
+                                "turns": telem.get("turns"),
+                                "research": telem.get("research"), "builds": telem.get("builds")})
                 bits = []
                 if telem.get("cost") is not None:
                     bits.append(f"${telem['cost']:.2f}")
@@ -386,6 +480,18 @@ def main():
                     bits.append(f"{telem['sec']}s")
                 extra = (" · " + " · ".join(bits)) if bits else ""
                 log(f"  {outcome.upper():12} {company} {('('+cov+')') if cov else ''}{extra}")
+                # Where did the time go? (research round-trips · full PDF rebuilds · turns)
+                where = []
+                if telem.get("research") is not None:
+                    where.append(f"{telem['research']} web search(es)")
+                if telem.get("builds") is not None:
+                    where.append(f"{telem['builds']} PDF build(s)")
+                if telem.get("turns"):
+                    where.append(f"{telem['turns']} turns")
+                if where:
+                    log(f"    [{company}] breakdown: " + " · ".join(where))
+                # Live status: refresh the banner/counts as each role finishes.
+                report.write_status("running", run_id, results, started=started)
 
     log_path = report.write_runlog(run_id, results)
     report.write_status("idle", run_id, results, started=started, log_path=log_path)

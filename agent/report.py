@@ -55,7 +55,7 @@ def write_status(state, run_id, results=None, started=None, log_path=None):
         "results": [
             {k: r.get(k, "") for k in
              ("company", "role", "url", "outcome", "reason", "coverage",
-              "tokens", "seconds", "turns")}
+              "tokens", "seconds", "turns", "research", "builds")}
             for r in results
         ],
     }
@@ -85,8 +85,8 @@ def write_runlog(run_id, results):
         summary += "  ·  **" + " · ".join(tel) + "**"
     lines.append(summary)
     lines.append("")
-    lines.append("| Outcome | Company | Role | Coverage | Cost | New tok | Time | Reason |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| Outcome | Company | Role | Coverage | Cost | New tok | Time | Research | Builds | Turns | Reason |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
     order = {"built": 0, "needs_review": 1, "dropped": 2, "failed": 3}
     for r in sorted(results, key=lambda x: order.get(x.get("outcome"), 9)):
         icon = {"built": "✅", "dropped": "❌", "needs_review": "⚠️", "failed": "🛑"}.get(
@@ -95,9 +95,13 @@ def write_runlog(run_id, results):
         cost = f"${r['cost']:.2f}" if r.get("cost") is not None and r.get("cost") != "" else ""
         tok = f"{(r.get('tokens') or 0) // 1000}k" if r.get("tokens") else ""
         sec = f"{r.get('seconds')}s" if r.get("seconds") else ""
+        research = str(r["research"]) if r.get("research") not in (None, "") else ""
+        builds = str(r["builds"]) if r.get("builds") not in (None, "") else ""
+        turns = str(r["turns"]) if r.get("turns") not in (None, "") else ""
         lines.append(
             f"| {icon} {r.get('outcome','')} | {r.get('company','')} | "
-            f"{r.get('role','')} | {r.get('coverage','')} | {cost} | {tok} | {sec} | {reason} |")
+            f"{r.get('role','')} | {r.get('coverage','')} | {cost} | {tok} | {sec} | "
+            f"{research} | {builds} | {turns} | {reason} |")
     lines.append("")
     log_path = RUNS / f"{run_id}.md"
     _atomic_write(log_path, "\n".join(lines))

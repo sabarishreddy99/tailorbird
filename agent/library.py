@@ -30,12 +30,32 @@ KEEP = [
     "Skills Category Blocks",
 ]
 
+# Household-name employers whose generic background needs no web research (the JD
+# is already supplied). Keys are normalized: lowercase, non-alphanumerics stripped
+# (so "T-Mobile" -> "tmobile"), matching familiar_company()'s normalization.
 KNOWN_COMPANIES = {
+    # Big tech / infra
     "google", "apple", "amazon", "microsoft", "meta", "netflix", "stripe",
     "datadog", "figma", "duolingo", "snap", "uber", "airbnb", "salesforce",
     "nvidia", "openai", "anthropic", "linkedin", "adobe", "oracle", "ibm",
     "coinbase", "databricks", "snowflake", "atlassian", "shopify", "block",
     "paypal", "cloudflare", "pinterest", "reddit", "roblox", "roku", "twilio",
+    "spotify", "dropbox", "lyft", "doordash", "instacart", "robinhood", "plaid",
+    "samsung", "sony", "dell", "hp", "vmware", "redhat", "sap", "servicenow",
+    "workday", "intuit", "qualcomm", "amd", "tesla", "palantir", "zoom", "slack",
+    "docusign", "okta", "crowdstrike", "paloaltonetworks", "mongodb", "elastic",
+    "hashicorp", "gitlab", "github", "confluent", "ebay", "twitter", "x",
+    # Telecom / carriers
+    "tmobile", "verizon", "att", "comcast", "charter", "spectrum",
+    # Banks / finance / payments
+    "jpmorgan", "jpmorganchase", "chase", "bankofamerica", "wellsfargo", "citi",
+    "citibank", "citigroup", "capitalone", "goldmansachs", "morganstanley",
+    "americanexpress", "amex", "visa", "mastercard", "fidelity", "charlesschwab",
+    "usbank", "pnc", "discover", "blackrock",
+    # Retail / consumer / logistics / health
+    "walmart", "target", "costco", "homedepot", "lowes", "nike", "starbucks",
+    "disney", "fedex", "ups", "cvs", "walgreens", "unitedhealth", "cigna",
+    "kaiserpermanente", "att",
 }
 
 STOP = set(("the a an and or of to in for with on at by from as is are be this that "

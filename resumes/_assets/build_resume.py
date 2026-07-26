@@ -232,17 +232,41 @@ def main():
     html_path = os.path.join(scratch, "resume.html")
     json_path = os.path.join(scratch, "content.json")
 
-    # PDF density ladder: pick the MOST GENEROUS line-height that still fits 1 page.
-    # This both fills the page visually and signals content volume.
+    # PDF density ladder: pick the MOST GENEROUS line-height that still fits 1 page
+    # (fills the page visually and signals content volume). Fit is monotonic — a
+    # denser line-height always fits if a more generous one does — so we BINARY
+    # SEARCH the ladder (~3 Chrome launches) instead of scanning all 7 linearly.
+    # The chosen line-height, and thus the output PDF, is identical to the old scan.
     pdf_path = os.path.join(outdir, base + ".pdf")
-    for lh in ("1.3", "1.25", "1.2", "1.15", "1.13", "1.1", "1.07"):
-        open(html_path, "w").write(render_html(doc, lh))
+    LADDER = ("1.07", "1.1", "1.13", "1.15", "1.2", "1.25", "1.3")  # dense -> generous
+
+    def render_pages(line_height):
+        open(html_path, "w").write(render_html(doc, line_height))
         subprocess.run([CHROME, "--headless", "--disable-gpu", "--no-pdf-header-footer",
-                        "--print-to-pdf=" + pdf_path, html_path],
-                       capture_output=True)
-        pages = page_count(pdf_path)
-        if pages == 1:
-            break
+                        "--print-to-pdf=" + pdf_path, html_path], capture_output=True)
+        return page_count(pdf_path)
+
+    memo, lo, hi, best = {}, 0, len(LADDER) - 1, -1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        p = memo.get(LADDER[mid])
+        if p is None:
+            p = memo[LADDER[mid]] = render_pages(LADDER[mid])
+        if p == 1:
+            best, lo = mid, mid + 1      # fits -> try a more generous height
+        else:
+            hi = mid - 1                 # overflows -> must go denser
+
+    lh = LADDER[best] if best >= 0 else LADDER[0]
+    pages = render_pages(lh)             # authoritative final render leaves the chosen PDF on disk
+    # Safety net: if that render disagrees with the search (rare non-monotonic layout),
+    # step denser until it fits so we never emit a 2-page PDF when a denser one would fit.
+    if pages > 1 and best > 0:
+        for j in range(best - 1, -1, -1):
+            lh = LADDER[j]
+            pages = render_pages(lh)
+            if pages == 1:
+                break
     print("PDF: %s (%d page(s), line-height %s)" % (pdf_path, pages, lh))
     if pages > 1:
         print("WARNING: still %d pages at max density; trim content in the MD." % pages)
