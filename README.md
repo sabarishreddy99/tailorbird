@@ -34,6 +34,7 @@ in **`resumes/_index/LIBRARY.md`**, and every generated résumé is stored under
 
 - [Why Tailorbird (inspiration & who it helps)](#why-tailorbird-inspiration--who-it-helps)
 - [Quick start](#quick-start)
+- [How it works — a 4-step walkthrough](#how-it-works--a-4-step-walkthrough)
 - [Prerequisites](#prerequisites)
 - [Installation (step by step, per device)](#installation-step-by-step-per-device)
 - [Architecture](#architecture)
@@ -108,6 +109,63 @@ python3 agent/run.py --dry-run          # classify the queue, write nothing
 python3 agent/run.py --once             # process the queue (default concurrency 3)
 python3 agent/run.py --only "<url>"     # process a single queued URL
 ```
+
+---
+
+## How it works — a 4-step walkthrough
+
+The whole loop is: **paste a job URL → click Run agent → watch it work live → collect the
+tailored résumé.** Here it is end-to-end in the tracker UI (screenshots use a sanitized
+demo queue).
+
+### 1. Start with your queue
+
+Launch the tracker (`python3 tracker/tracker.py`) and open `http://localhost:8765`. The top
+bar is where you paste job URLs; below it the **agent bar** (Run agent / Dry run /
+parallelism / Schedule) and the **Queue / Logs / About** tabs. The queue is a dense,
+inline-editable ledger — every field autosaves.
+
+![The Tailorbird queue: paste bar, agent controls, and the editable job ledger](docs/images/step1_queue.png)
+
+### 2. Add a job URL
+
+Paste one or more posting URLs into the box and hit **Add to queue** (or just `Enter`). A
+new row lands with status **`queued`** — no company or role yet; the agent fills those in
+when it fetches the posting. Here a Figma role has been queued.
+
+![A freshly added Figma posting sitting in the queue as "queued"](docs/images/step2_queued.png)
+
+### 3. Run the agent — and watch it work, live
+
+Click **Run agent**. Tailorbird jumps to the **Logs** tab and streams a **live, timestamped
+feed of exactly what it's doing right now** — fetching the JD, screening eligibility, then,
+inside the résumé skill, reading the kit, authoring the résumé, and building the PDF/DOCX.
+Each tool call becomes one readable line (🔎 research · 📖 read · ✍️ edit · 🖨️ build). The
+right rail lists past runs and a plain-language legend of the stages.
+
+![The Logs tab streaming the agent's steps in real time as it tailors the résumé](docs/images/step3_live_logs.png)
+
+When a role finishes, the log prints the outcome, the cost/tokens/time, and a **breakdown of
+where the time went** so you can see the bottleneck at a glance, e.g.:
+
+```
+  BUILT        Figma (~88%) · $1.36 · 83k new tok · 176s
+    [Figma] breakdown: 0 web search(es) · 3 PDF build(s) · 19 turns
+```
+
+The agent only ever sets `dropped`, `needs_review`, or `resume_ready` — everything from
+`applied` onward stays yours.
+
+### 4. Collect the tailored résumé
+
+The row flips to **`resume_ready`** with a coverage estimate and a **PDF** pill (opens the
+one-page résumé) plus a copy-path button. The DOCX and a coverage/gaps report are written
+alongside it under `resumes/{Company}/`.
+
+![The Figma row now resume_ready at ~88% with a PDF ready to open](docs/images/step4_ready.png)
+
+That's the entire loop. Queue a dozen URLs, click once, and come back to finished résumés
+plus a short list of any borderline roles parked in `needs_review` for you to judge.
 
 ---
 
