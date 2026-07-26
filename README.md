@@ -111,6 +111,10 @@ python3 agent/run.py --only "<url>"     # process a single queued URL
 ```
 
 ---
+## UI Overview
+![What actually the tailbird is..?](docs/images/about.png)
+
+![Tailbird tracker opetions!](docs/images/options.png)
 
 ## How it works — a 4-step walkthrough
 
