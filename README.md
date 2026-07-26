@@ -145,16 +145,20 @@ right rail lists past runs and a plain-language legend of the stages.
 
 ![The Logs tab streaming the agent's steps in real time as it tailors the résumé](docs/images/step3_live_logs.png)
 
-When a role finishes, the log prints the outcome, the cost/tokens/time, and a **breakdown of
-where the time went** so you can see the bottleneck at a glance, e.g.:
+When the role finishes, the banner flips to **idle** with the run's totals, and the log
+prints the outcome plus a **breakdown of where the time went** — so the bottleneck is
+obvious at a glance:
+
+![The completed run: idle banner reading "1 built · $1.23 · 77k tok · 122s"](docs/images/step3_done_log.png)
 
 ```
-  BUILT        Figma (~88%) · $1.36 · 83k new tok · 176s
-    [Figma] breakdown: 0 web search(es) · 3 PDF build(s) · 19 turns
+  BUILT        Figma (~88%) · $1.23 · 77k new tok · 122s
+    [Figma] breakdown: 0 web search(es) · 1 PDF build(s) · 17 turns
 ```
 
-The agent only ever sets `dropped`, `needs_review`, or `resume_ready` — everything from
-`applied` onward stays yours.
+(This exact run: one page on the first try — a single PDF build — in 122 seconds.) The agent
+only ever sets `dropped`, `needs_review`, or `resume_ready` — everything from `applied`
+onward stays yours.
 
 ### 4. Collect the tailored résumé
 
