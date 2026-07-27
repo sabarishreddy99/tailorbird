@@ -29,6 +29,7 @@ a sequential run because each role gets its own dedicated skill invocation.
 import argparse
 import concurrent.futures as cf
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -37,6 +38,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 
@@ -52,6 +54,8 @@ LIBRARY = ROOT / "resumes" / "_index" / "LIBRARY.md"
 UPDATE_QUEUE = ROOT / "tracker" / "update_queue.py"
 RUNLOCK = ROOT / "agent" / ".lock"
 STAGING = ROOT / "agent" / "runs" / "staging"
+SESSION_FILE = ROOT / "agent" / "runs" / "session.json"  # persistent primed base session
+SKILL_INSTALL = Path.home() / ".claude" / "skills" / "resume-tailoring"
 
 FETCH_POOL = 8
 SKILL_TIMEOUT = 900  # 15 min per role
@@ -275,9 +279,80 @@ def _stream_skill(cmd, prompt, company):
     return result_evt, counts, killed["v"], tail
 
 
-def run_skill(row, job, run_id):
+# --------------------------------------------------------- primed base session
+# The queue is authored one job at a time through a single PRIMED base session:
+# the /resume-tailoring skill is loaded ONCE into that base, then every job runs
+# as a clean `--resume <base> --fork-session` child. So the (expensive) skill +
+# system prefix is a cache READ per job instead of being re-created N times, and
+# no job ever sees another job's resume. All invocations also pass
+# --strict-mcp-config so the six unused MCP servers never load.
+
+def _base_cmd():
+    """Flags shared by the prime AND every job fork. MUST be identical between
+    them or the cached prefix (system prompt + skill) won't be reused."""
+    return ["--strict-mcp-config", "--permission-mode", "bypassPermissions",
+            "--add-dir", str(ROOT)]
+
+
+def _skill_hash():
+    """Fingerprint the installed skill so we re-prime when it is edited."""
+    if not SKILL_INSTALL.exists():
+        return ""
+    h = hashlib.sha256()
+    for p in sorted(SKILL_INSTALL.rglob("*.md")):
+        try:
+            h.update(p.name.encode()); h.update(p.read_bytes())
+        except Exception:
+            pass
+    return h.hexdigest()[:16]
+
+
+def prime_session(sid):
+    """Warm a persistent base session that loads the skill exactly once."""
+    warm = ("Load the /resume-tailoring:resume-tailoring skill so it is ready for use, then "
+            "reply with exactly READY and nothing else. Do not tailor anything yet.")
+    cmd = [claude_bin(), "-p", "--session-id", sid, "--output-format", "json"] + _base_cmd()
+    try:
+        r = subprocess.run(cmd, input=warm, cwd=str(ROOT), capture_output=True,
+                           text=True, timeout=180)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def ensure_base_session(force=False):
+    """Return a persistent base session id with the skill already loaded, priming
+    once if needed. Returns None if priming fails (caller falls back to fresh
+    sessions, still MCP-free). Persisted so the base is reused across jobs and
+    across runs until the installed skill changes."""
+    want = _skill_hash()
+    if not force and SESSION_FILE.exists():
+        try:
+            st = json.loads(SESSION_FILE.read_text())
+            if st.get("session_id") and st.get("skill_hash") == want:
+                log(f"  reusing primed session {st['session_id'][:8]}… (skill already loaded)")
+                return st["session_id"]
+        except Exception:
+            pass
+    sid = str(uuid.uuid4())
+    log(f"  priming session {sid[:8]}… (loading the skill one time for the whole queue)")
+    if not prime_session(sid):
+        log("  prime failed; falling back to a fresh session per job (still MCP-free).")
+        return None
+    try:
+        SESSION_FILE.write_text(json.dumps(
+            {"session_id": sid, "skill_hash": want,
+             "primed_at": datetime.now().isoformat(timespec="seconds")}, indent=2))
+    except Exception:
+        pass
+    return sid
+
+
+def run_skill(row, job, run_id, base_uuid=None):
     """Invoke the real skill headlessly for one BUILD role over a compact kit.
-    Returns {outcome, company, role, coverage, reason, history_row, telem}."""
+    When base_uuid is set, fork a clean child of the primed base (skill reused);
+    otherwise run a fresh MCP-free session. Returns
+    {outcome, company, role, coverage, reason, history_row, telem, evicted}."""
     STAGING.mkdir(parents=True, exist_ok=True)
     s = slug((job.get("title") or row.get("company") or "role"))
     jd_path = STAGING / f"{run_id}-{s}.jd.txt"
@@ -298,9 +373,14 @@ def run_skill(row, job, run_id):
                 "SKIP web research: this maps cleanly to a known archetype and familiar "
                 "company. Tailor from the JD + kit unless you find a real gap.")
 
-    prompt = f"""Use the /resume-tailoring:resume-tailoring skill to tailor ONE resume in
-AUTONOMOUS EXPRESS mode (no interactive checkpoints; take the skill's recommended option
-and proceed).
+    skill_intro = (
+        "Using the /resume-tailoring:resume-tailoring skill ALREADY LOADED in this session "
+        "(do NOT re-open or re-read the skill files — they are already in context), tailor "
+        "ONE resume"
+        if base_uuid else
+        "Use the /resume-tailoring:resume-tailoring skill to tailor ONE resume")
+    prompt = f"""{skill_intro} in AUTONOMOUS EXPRESS mode (no interactive checkpoints; take the
+skill's recommended option and proceed).
 
 Role URL: {row['url']}
 Company hint: {row.get('company','')}
@@ -340,8 +420,11 @@ projected coverage below ~65%), set outcome="needs_review" with the reason and s
 the JSON. Never fabricate experience."""
 
     company = row.get("company") or (job.get("title") or "role")
-    cmd = [claude_bin(), "-p", "--output-format", "stream-json", "--verbose",
-           "--permission-mode", "bypassPermissions", "--add-dir", str(ROOT)]
+    if base_uuid:
+        cmd = [claude_bin(), "-p", "--resume", base_uuid, "--fork-session",
+               "--output-format", "stream-json", "--verbose"] + _base_cmd()
+    else:
+        cmd = [claude_bin(), "-p", "--output-format", "stream-json", "--verbose"] + _base_cmd()
     result_evt, counts, killed, tail = _stream_skill(cmd, prompt, company)
     if killed:
         return {"outcome": "failed", "reason": "skill run timed out", "telem": {}}
@@ -352,7 +435,12 @@ the JSON. Never fabricate experience."""
         reason = "skill produced no result file"
         if tail:
             reason += f" ({tail[-1]})"
-        return {"outcome": "failed", "reason": reason, "telem": telem}
+        # Base session gone/evicted? Signal the caller to re-prime and retry once.
+        evicted = bool(base_uuid) and any(
+            kw in " ".join(tail).lower() for kw in
+            ("no conversation", "session not found", "no session", "could not resume",
+             "not found", "resume"))
+        return {"outcome": "failed", "reason": reason, "telem": telem, "evicted": evicted}
     try:
         out = json.loads(out_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -377,7 +465,11 @@ def main():
     p.add_argument("--once", action="store_true", default=True)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--only", default=None, help="process a single URL")
-    p.add_argument("--concurrency", type=int, default=3)
+    p.add_argument("--concurrency", type=int, default=3,
+                   help="(kept for compatibility; authoring now runs serially through one "
+                        "primed session)")
+    p.add_argument("--fresh-session", action="store_true",
+                   help="rollback: a fresh MCP-free session per job (no primed-base reuse)")
     a = p.parse_args()
 
     RUNLOCK.parent.mkdir(parents=True, exist_ok=True)
@@ -394,7 +486,8 @@ def main():
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
     started = datetime.now().isoformat(timespec="seconds")
     rows = load_queued(a.only)
-    log(f"run {run_id}: {len(rows)} queued role(s), concurrency={a.concurrency}"
+    mode = "fresh session/job" if a.fresh_session else "one primed session, serial"
+    log(f"run {run_id}: {len(rows)} queued role(s) ({mode})"
         + (" [DRY RUN]" if a.dry_run else ""))
     if not rows:
         report.write_status("idle", run_id, [], started=started)
@@ -437,61 +530,69 @@ def main():
         else:
             builds.append((row, job, v))
 
-    # Stage B commits: author in parallel, commit in the parent as each finishes.
+    # Stage B: author ONE job at a time through a single primed base session, so
+    # the skill is loaded once and reused (cache reads) instead of re-created per
+    # job. Commits happen in the parent, already serialized.
     if builds:
-        log(f"  building {len(builds)} role(s) with the skill...")
-        with cf.ThreadPoolExecutor(max_workers=max(1, a.concurrency)) as ex:
-            fut = {ex.submit(run_skill, row, job, run_id): (row, job)
-                   for row, job, _ in builds}
-            for f in cf.as_completed(fut):
-                row, job = fut[f]
-                company = row.get("company") or "unknown"
-                role = row.get("role") or (job.get("title") or "").strip()
-                try:
-                    out = f.result()
-                except Exception as e:
-                    out = {"outcome": "failed", "reason": f"worker error: {e}"}
-                outcome = out.get("outcome", "failed")
-                company = out.get("company") or company
-                role = out.get("role") or role
-                cov = out.get("coverage", "")
-                reason = out.get("reason", "")
-                telem = out.get("telem") or {}
-                if outcome == "built":
-                    upsert(company, role, "resume_ready", row["url"], coverage=cov,
-                           notes=f"agent: {reason}"[:300], pdf=find_pdf(company))
-                    append_history(out.get("history_row", ""))
-                elif outcome == "needs_review":
-                    upsert(company, role, "needs_review", row["url"], notes=f"agent: {reason}"[:300])
-                else:  # failed -> leave the row queued for the next run
-                    log(f"  build FAILED {company}: {reason}")
-                results.append({"company": company, "role": role, "url": row["url"],
-                                "outcome": outcome, "reason": reason, "coverage": cov,
-                                "tokens": telem.get("new_tok"), "cache_tokens": telem.get("cache_tok"),
-                                "cost": telem.get("cost"), "seconds": telem.get("sec"),
-                                "turns": telem.get("turns"),
-                                "research": telem.get("research"), "builds": telem.get("builds")})
-                bits = []
-                if telem.get("cost") is not None:
-                    bits.append(f"${telem['cost']:.2f}")
-                if telem.get("new_tok"):
-                    bits.append(f"{telem['new_tok'] // 1000}k new tok")
-                if telem.get("sec"):
-                    bits.append(f"{telem['sec']}s")
-                extra = (" · " + " · ".join(bits)) if bits else ""
-                log(f"  {outcome.upper():12} {company} {('('+cov+')') if cov else ''}{extra}")
-                # Where did the time go? (research round-trips · full PDF rebuilds · turns)
-                where = []
-                if telem.get("research") is not None:
-                    where.append(f"{telem['research']} web search(es)")
-                if telem.get("builds") is not None:
-                    where.append(f"{telem['builds']} PDF build(s)")
-                if telem.get("turns"):
-                    where.append(f"{telem['turns']} turns")
-                if where:
-                    log(f"    [{company}] breakdown: " + " · ".join(where))
-                # Live status: refresh the banner/counts as each role finishes.
-                report.write_status("running", run_id, results, started=started)
+        base_uuid = None if a.fresh_session else ensure_base_session()
+        how = "reusing one primed session" if base_uuid else "fresh session each"
+        log(f"  building {len(builds)} role(s) one at a time ({how})...")
+        for row, job, _ in builds:
+            company = row.get("company") or "unknown"
+            role = row.get("role") or (job.get("title") or "").strip()
+            try:
+                out = run_skill(row, job, run_id, base_uuid)
+                if out.get("evicted") and base_uuid:
+                    log("  base session unavailable; re-priming and retrying once...")
+                    base_uuid = ensure_base_session(force=True)
+                    out = run_skill(row, job, run_id, base_uuid)
+            except Exception as e:
+                out = {"outcome": "failed", "reason": f"worker error: {e}"}
+            outcome = out.get("outcome", "failed")
+            company = out.get("company") or company
+            role = out.get("role") or role
+            cov = out.get("coverage", "")
+            reason = out.get("reason", "")
+            telem = out.get("telem") or {}
+            if outcome == "built":
+                upsert(company, role, "resume_ready", row["url"], coverage=cov,
+                       notes=f"agent: {reason}"[:300], pdf=find_pdf(company))
+                append_history(out.get("history_row", ""))
+            elif outcome == "needs_review":
+                upsert(company, role, "needs_review", row["url"], notes=f"agent: {reason}"[:300])
+            else:  # failed -> leave the row queued for the next run
+                log(f"  build FAILED {company}: {reason}")
+            results.append({"company": company, "role": role, "url": row["url"],
+                            "outcome": outcome, "reason": reason, "coverage": cov,
+                            "tokens": telem.get("new_tok"), "cache_tokens": telem.get("cache_tok"),
+                            "cost": telem.get("cost"), "seconds": telem.get("sec"),
+                            "turns": telem.get("turns"),
+                            "research": telem.get("research"), "builds": telem.get("builds")})
+            bits = []
+            if telem.get("cost") is not None:
+                bits.append(f"${telem['cost']:.2f}")
+            if telem.get("new_tok"):
+                bits.append(f"{telem['new_tok'] // 1000}k new tok")
+            if telem.get("sec"):
+                bits.append(f"{telem['sec']}s")
+            extra = (" · " + " · ".join(bits)) if bits else ""
+            log(f"  {outcome.upper():12} {company} {('('+cov+')') if cov else ''}{extra}")
+            # Where did the time/tokens go? (cache-read = skill reused, not reloaded)
+            where = []
+            if telem.get("cache_tok"):
+                where.append(f"{telem['cache_tok'] // 1000}k cache-read")
+            if telem.get("new_tok"):
+                where.append(f"{telem['new_tok'] // 1000}k fresh")
+            if telem.get("research") is not None:
+                where.append(f"{telem['research']} web search(es)")
+            if telem.get("builds") is not None:
+                where.append(f"{telem['builds']} PDF build(s)")
+            if telem.get("turns"):
+                where.append(f"{telem['turns']} turns")
+            if where:
+                log(f"    [{company}] breakdown: " + " · ".join(where))
+            # Live status: refresh the banner/counts as each role finishes.
+            report.write_status("running", run_id, results, started=started)
 
     log_path = report.write_runlog(run_id, results)
     report.write_status("idle", run_id, results, started=started, log_path=log_path)
