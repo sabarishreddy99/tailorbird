@@ -626,9 +626,6 @@
     <span class="dot" id="agentDot"></span>
     <button class="primary" id="runBtn">Run agent</button>
     <button class="ghost" id="dryBtn">Dry run</button>
-    <label style="font-size:13px;color:var(--muted)">Parallel
-      <input class="num" type="number" id="agentConc" min="1" max="8" value="3" />
-    </label>
     <span class="banner" id="agentBanner">agent idle</span>
     <span class="sep"></span>
     <details class="sched" id="sched">
@@ -639,9 +636,6 @@
         </label>
         <label style="font-size:13px;color:var(--muted)">times
           <input type="text" id="schedTimes" placeholder="09:00,13:00,18:00" value="09:00,13:00,18:00" />
-        </label>
-        <label style="font-size:13px;color:var(--muted)">parallel
-          <input class="num" type="number" id="schedConc" min="1" max="8" value="3" />
         </label>
         <button class="ghost" id="schedSave">Save schedule</button>
         <span class="banner" id="schedStatus"></span>
@@ -825,8 +819,9 @@
           instead of guessing, and you decide with one click: <b>Build</b> or <b>Drop</b>.
         </div>
         <div class="card">
-          <h3>⚡ Runs in parallel, or on a schedule</h3>
-          Process many roles at once (you set how many), on demand from the
+          <h3>⚡ Runs on demand, or on a schedule</h3>
+          Works through your whole queue one role at a time — reusing a single primed
+          session so the skill loads once and every job stays cheap — on demand from the
           <b>Run agent</b> button or automatically on a daily schedule you control from the
           <b>Schedule</b> panel, even while your laptop sits idle.
         </div>
@@ -851,7 +846,7 @@
       <h3 class="about-h">How to use it</h3>
       <ol class="about-steps">
         <li>Paste one or more job URLs in the box up top and <b>Add to queue</b>.</li>
-        <li>Click <b>Run agent</b> (set <em>Parallel</em> higher to go faster).</li>
+        <li>Click <b>Run agent</b> — it works through the queue one role at a time.</li>
         <li>Watch the <b>Logs</b> tab; results land back in the <b>Queue</b> table.</li>
         <li>Resolve any <b>needs review</b> rows (Build / Drop), then open the <b>PDF</b>
             for the ready ones and apply.</li>
@@ -1815,9 +1810,9 @@ addEventListener("beforeunload", saveUI);
 
 /* ---------- agent controls ---------- */
 async function runAgent(dry) {
-  const concurrency = Math.max(1, Math.min(8, parseInt($("agentConc").value) || 3));
+  // Authoring runs one role at a time through a single reused session; concurrency is fixed.
   try {
-    await api("/api/run-agent", "POST", { concurrency, dry_run: !!dry });
+    await api("/api/run-agent", "POST", { concurrency: 1, dry_run: !!dry });
     $("agentBanner").textContent = dry ? "dry run started…" : "agent started…";
     $("runBtn").disabled = true;
     switchTab("logs");                 // jump to the live log so progress is visible
@@ -1874,7 +1869,6 @@ async function loadSchedule() {
   try { s = await api("/api/schedule", "GET"); } catch { return; }
   $("schedToggle").checked = !!s.loaded;
   if (s.times && s.times.length) $("schedTimes").value = s.times.join(",");
-  if (s.concurrency) $("schedConc").value = s.concurrency;
   $("schedStatus").textContent = s.loaded ? `on (${(s.times || []).join(", ")})`
     : (s.installed ? "installed, not loaded" : "off");
 }
@@ -1882,11 +1876,10 @@ async function loadSchedule() {
 async function saveSchedule() {
   const enabled = $("schedToggle").checked;
   const times = $("schedTimes").value.split(",").map(t => t.trim()).filter(Boolean);
-  const concurrency = Math.max(1, Math.min(8, parseInt($("schedConc").value) || 3));
   $("schedStatus").textContent = "saving…";
   try {
     await api("/api/schedule", "POST",
-      enabled ? { action: "enable", times, concurrency } : { action: "disable" });
+      enabled ? { action: "enable", times, concurrency: 1 } : { action: "disable" });
   } catch { $("schedStatus").textContent = "failed"; return; }
   loadSchedule();
 }

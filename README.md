@@ -106,7 +106,7 @@ python3 tracker/tracker.py
 
 # 3. Or run the agent from the CLI:
 python3 agent/run.py --dry-run          # classify the queue, write nothing
-python3 agent/run.py --once             # process the queue (default concurrency 3)
+python3 agent/run.py --once             # process the queue (one role at a time, reused session)
 python3 agent/run.py --only "<url>"     # process a single queued URL
 ```
 
@@ -301,7 +301,7 @@ works: fetch → screen → skill authoring → PDF/DOCX → tracker row.
                         tracker/tracker.py  ──spawn──►      agent/schedule.py ──►  launchd plist
                         (localhost:8765, stdlib)                                  (background runs)
                                     │
-                                    ▼   python3 agent/run.py --once --concurrency N
+                                    ▼   python3 agent/run.py --once
    ┌──────────────────────────── agent/run.py (orchestrator, pure Python, 0 tokens) ───────────────────────────┐
    │ 1. load queue        job_queue.json → rows where status == "queued"                                        │
    │ 2. fetch JD          agent/ats.py    → any ATS host (Greenhouse/Ashby/Lever/Workday/... + generic fallback)│
@@ -310,7 +310,7 @@ works: fetch → screen → skill authoring → PDF/DOCX → tracker row.
    │      ├─ NEEDS_REVIEW → tracker: needs_review   + reason                                                    │
    │      └─ BUILD ▼                                                                                            │
    │ 4. build kit         agent/library.py → compact context (archetype + base résumé + boundaries)            │
-   │ 5. author            claude -p  "/resume-tailoring …"  (the REAL skill authors md+report+pdf) [PARALLEL ≤N]│
+   │ 5. author            claude -p  "/resume-tailoring …"  (real skill; SERIAL, one primed session reused)     │
    │ 6. gate + commit     deterministic checks (page count, em-dash, ...) → tracker: resume_ready + LIBRARY row │
    │ 7. report            agent/report.py → agent/runs/<ts>.md + status.json (+ per-role cost/tokens/time)      │
    └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
@@ -435,12 +435,16 @@ to `resumes/pdfs/{Company}/`.
 4. **Route the non-builds (serialized in the parent):**
    - `HARD_DROP` → `update_queue.py --status dropped` + a LIBRARY history row. **No model call.**
    - `NEEDS_REVIEW` → `update_queue.py --status needs_review` with a reason. **No model call.**
-5. **Author the builds (parallel, pool ≤ N, default 3):** for each BUILD role,
-   `run_skill()`:
+5. **Author the builds (serial, one primed session reused):** the skill is loaded **once**
+   into a persistent base session (`ensure_base_session()`, id cached in
+   `agent/runs/session.json`); each BUILD role then runs **one at a time** as a clean
+   `--resume <base> --fork-session` child, so the skill + system prefix is a cache *read*
+   per job instead of being recreated. For each role, `run_skill()`:
    - `library.build_kit()` pre-assembles a compact context (chosen base résumé + archetype
      table + boundaries + style rules) and a research directive, written to a kit file.
-   - Invokes `claude -p --output-format json --permission-mode bypassPermissions
-     --add-dir <repo>` running the real `/resume-tailoring` skill over the kit + JD.
+   - Invokes `claude -p --resume <base> --fork-session --strict-mcp-config --output-format
+     stream-json --permission-mode bypassPermissions --add-dir <repo>` (no MCP servers load)
+     running the already-loaded `/resume-tailoring` skill over the kit + JD.
    - The skill authors the `.md` + report, builds the PDF/DOCX with `build_resume.py`, and
      writes a small **staging JSON** (`outcome`, `company`, `role`, `coverage`, `reason`,
      `history_row`, `md_path`, `pages`). It does **not** touch `job_queue.json` or
@@ -476,6 +480,16 @@ and flat ranges, and ignores year ranges like `5-8 years`.
 
 The only expensive step is the per-role skill run. It's kept cheap without lowering quality:
 
+- **Load the skill once, reuse it per job** — the queue is authored serially through a
+  single **primed base session**: the `/resume-tailoring` skill is loaded one time, then
+  each role runs as a clean `--resume <base> --fork-session` child, so the skill + system
+  prefix is a **cache read** (~0.1× price) per job instead of being recreated every time.
+  The base persists in `agent/runs/session.json` and is reused across runs until the skill
+  changes. Measured on a real build: fresh tokens dropped **77k → 42k** and cost **$1.23 →
+  $0.92** for the same role, with the one-time prime amortized across the whole queue.
+- **No unused MCP servers** — every invocation passes `--strict-mcp-config`, so the six MCP
+  servers that would otherwise load (Gmail, Drive, Calendar, Vercel, Figma, …) — none of
+  which résumé tailoring uses — never enter a session's context.
 - **Compact "kit" instead of the whole library** — `library.py` slices `LIBRARY.md` down
   to just the authoring-relevant sections + the one nearest base résumé (~9K tokens vs
   ~35K for the full library), and tells the run not to re-read the library or scan the
