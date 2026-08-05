@@ -21,9 +21,9 @@ import sys
 import webbrowser
 from datetime import date
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
-PORT = 8765
+PORT = int(os.environ.get("TAILORBIRD_PORT", "8765"))
 ROOT = Path(__file__).resolve().parent.parent
 QUEUE = ROOT / "job_queue.json"
 LIBRARY = ROOT / "resumes" / "_index" / "LIBRARY.md"
@@ -81,9 +81,22 @@ sys.path.insert(0, str(ROOT / "agent"))
 try:
     import schedule as agent_schedule
     import report as agent_report
+    import session as agent_session
 except Exception:  # agent package optional; UI still works without it
     agent_schedule = None
     agent_report = None
+    agent_session = None
+
+# Models offered in the UI. "inherit" defers to ~/.claude/settings.json, but the
+# runner still resolves it to a concrete id and passes it explicitly, because
+# --setting-sources drops the file that defines it.
+MODELS = [
+    {"id": "opus", "label": "Opus — highest quality (default)"},
+    {"id": "sonnet", "label": "Sonnet — faster, cheaper"},
+    {"id": "haiku", "label": "Haiku — cheapest, weakest"},
+    {"id": "inherit", "label": "Inherit from settings.json"},
+]
+EFFORTS = ["default", "low", "medium", "high", "xhigh", "max"]
 
 # Lifecycle beyond what LIBRARY.md tracks. LIBRARY records whether a resume
 # was generated; this tracks what happened to the application afterward.
@@ -226,6 +239,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, json.dumps({"rev": rev(), "count": len(load()["jobs"])}))
         elif self.path == "/api/statuses":
             self._send(200, json.dumps(STATUSES))
+        elif self.path.startswith("/api/session"):
+            # Freshness of the primed base session. The UI passes its currently
+            # selected model/effort so a mismatch is reported as stale: prompt
+            # caches are model-scoped, and reusing a session primed on another
+            # model would silently discard the cached prefix.
+            if not agent_session:
+                self._send(200, json.dumps({"error": "agent package not found",
+                                            "models": MODELS, "efforts": EFFORTS}))
+                return
+            q = parse_qs(urlparse(self.path).query)
+            model = (q.get("model") or [None])[0]
+            effort = (q.get("effort") or [None])[0]
+            if effort == "default":
+                effort = None
+            try:
+                st = agent_session.status(model=model, effort=effort)
+            except Exception as e:
+                st = {"error": str(e), "stale": True, "reasons": [str(e)], "sources": []}
+            st["models"], st["efforts"] = MODELS, EFFORTS
+            self._send(200, json.dumps(st, ensure_ascii=False, default=str))
         elif self.path == "/api/agent-status":
             status = agent_report.read_status() if agent_report else {"state": "idle", "results": []}
             self._send(200, json.dumps(status, ensure_ascii=False))
@@ -266,14 +299,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
-    def _run_agent(self):
-        """Spawn agent/run.py detached. run.py's own lock prevents overlap."""
-        body, _ = self._body()
-        body = body or {}
-        conc = str(int(body.get("concurrency", 3) or 3))
-        args = [sys.executable, str(AGENT_RUN), "--once", "--concurrency", conc]
-        if body.get("dry_run"):
-            args.append("--dry-run")
+    def _model_args(self, body):
+        """Model/effort selection shared by run and refresh. Both must agree, or
+        the refresh would prime a base the run then rejects as stale."""
+        args, model = [], (body.get("model") or "").strip()
+        if model and any(m["id"] == model for m in MODELS):
+            args += ["--model", model]
+        effort = (body.get("effort") or "").strip()
+        if effort and effort != "default" and effort in EFFORTS:
+            args += ["--effort", effort]
+        return args
+
+    def _spawn(self, args, payload):
         if not AGENT_RUN.exists():
             self._send(404, json.dumps({"error": "agent/run.py not found"}))
             return
@@ -281,7 +318,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
         logfh = open(UI_RUN_LOG, "a")
         subprocess.Popen(args, cwd=str(ROOT), stdout=logfh, stderr=logfh,
                          start_new_session=True)
-        self._send(202, json.dumps({"ok": True, "started": True, "concurrency": conc}))
+        self._send(202, json.dumps(payload))
+
+    def _run_agent(self):
+        """Spawn agent/run.py detached. run.py's own lock prevents overlap."""
+        body, _ = self._body()
+        body = body or {}
+        conc = str(int(body.get("concurrency", 3) or 3))
+        args = [sys.executable, str(AGENT_RUN), "--once", "--concurrency", conc]
+        args += self._model_args(body)
+        if body.get("dry_run"):
+            args.append("--dry-run")
+        if body.get("reprime"):
+            args.append("--reprime")
+        self._spawn(args, {"ok": True, "started": True, "concurrency": conc,
+                           "model": body.get("model"), "effort": body.get("effort")})
+
+    def _reprime(self):
+        """Rebuild the primed base session from current data and exit.
+
+        Runs as a fresh subprocess, so every source (skill files, LIBRARY.md, the
+        base-resume corpus) is re-read from disk - there is no in-process cache
+        that could serve a stale copy.
+        """
+        body, _ = self._body()
+        body = body or {}
+        args = ([sys.executable, str(AGENT_RUN), "--reprime-only"]
+                + self._model_args(body))
+        self._spawn(args, {"ok": True, "repriming": True,
+                           "model": body.get("model"), "effort": body.get("effort")})
 
     def _schedule(self):
         if not agent_schedule:
@@ -305,6 +370,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Create one job, or trigger the agent / manage its schedule."""
         if self.path == "/api/run-agent":
             self._run_agent()
+            return
+        if self.path == "/api/reprime":
+            self._reprime()
             return
         if self.path == "/api/schedule":
             self._schedule()

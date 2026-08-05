@@ -926,15 +926,29 @@ Wait for user approval before generation.
 
 **Writing style rules (apply to ALL generated content — summary, bullets, project descriptions, across MD/DOCX/PDF):**
 - **ONE FULL, TIGHT PAGE — exactly.** Never 2 pages, and never a visibly
-  underfilled page. build_resume.py picks the most generous line-height
-  that fits and prints an UNDERFILLED note when content is light
-  (fits at line-height >= 1.2). When that note appears, ADD relevant
-  content rather than shipping a short page, in this priority order:
-  1) restore the most JD-relevant trimmed experience entry (e.g., VIT)
-  2) add a second project relevant to the JD
-  3) restore the coursework line
-  4) expand the strongest bullets with truthful detail from the index
-  Then re-run the build and confirm the note is gone.
+  underfilled page. build_resume.py prints a quantified fit line telling you
+  the gap **in rendered lines** — size ONE edit pass from that number, then
+  rebuild ONCE. Do not converge by trial-and-error:
+  - `FIT: one full page, slack ~N line(s). Ship it — do not rebuild.`
+    → done. Do not edit further, do not rebuild.
+  - `OVERFULL: ~N line(s) too long — cut ~N bullet line(s)...`
+    → remove approximately N rendered lines in a single edit, preferring:
+    1) the least JD-relevant bullet, 2) a wrapping clause on a long bullet,
+    3) the coursework line, 4) the least relevant entry.
+  - `UNDERFILLED: room for ~N more line(s)...`
+    → ADD approximately N rendered lines in a single edit rather than
+    shipping a short page, in this priority order:
+    1) restore the most JD-relevant trimmed experience entry (e.g., VIT)
+    2) add a second project relevant to the JD
+    3) restore the coursework line
+    4) expand the strongest bullets with truthful detail from the index
+  A rendered line is ~110 characters of bullet text. Apply the whole
+  correction in ONE tool call — MultiEdit, or re-Write the file — rather than
+  a run of single Edit calls; each Edit is a separate turn and a run of them
+  is the single largest avoidable cost in authoring a resume. **Budget: at
+  most 2 builds per resume.** If a third build is ever needed, the edit was
+  not sized to the reported number — re-read the number rather than nudging
+  again.
 - **NEVER use em dashes (—).** Restructure the sentence instead: use commas, "with", "spanning", "including", "that fuses", or split into two clauses. En dashes (–) remain acceptable in date ranges only.
 - **Avoid unnecessary colons in prose.** Rewrite "Sole engineer on an assistant: a 4-stage pipeline..." as "Sole engineer on an assistant with a 4-stage pipeline...". Keep only structural colons: skills category labels ("AI/ML:"), "Coursework:", client annotations ("Client: Shell PLC").
 - Before finalizing, scan every output format for "—" and prose colons and fix any found.
@@ -949,15 +963,18 @@ PREFERRED PATH (token-efficient, always try first):
   python3 {resume_library}/_assets/build_resume.py {resume.md} [--outdir DIR]
 
 This parses the canonical resume MD and produces BOTH:
-  - {basename}.pdf   (headless Chrome; auto-fits 1 page by retrying
-                      line-height 1.13 → 1.10 → 1.07; prints a WARNING
-                      if still 2 pages → trim clauses in the MD, re-run)
+  - {basename}.pdf   (headless Chrome; auto-fits 1 page by searching a
+                      line-height density ladder)
   - {basename}.docx  (validated docx-js output, Calibri, proper bullets)
+
+It also prints ONE quantified fit line — FIT / OVERFULL / UNDERFILLED —
+giving the gap in rendered lines. TRUST that number: size a single edit
+pass from it and rebuild at most once. See the one-page rule in 4.1.
 
 After generation:
   - Verify DOCX with the docx skill's validate.py
-  - Visually check the PDF's first page:
-    qlmanage -t -s 1200 -o /tmp {pdf} → Read the PNG
+  - Do NOT render or screenshot the PDF to check the page count; the text
+    output above is authoritative and a screenshot costs far more.
 
 FALLBACK (only if build_resume.py is missing or fails on a structure
 it cannot parse): use document-skills:docx to hand-build the DOCX and
@@ -969,7 +986,16 @@ extending build_resume.py so the next session does not pay this cost.
 
 **4.4 Generation Summary Report:**
 
-**Create metadata file:**
+> **In AUTONOMOUS/batch mode, do NOT write this file.** The orchestrator renders
+> it from the `report` object in the single result JSON you already write, so
+> everything below that is scaffolding — headings, dates, company/role, base
+> used, coverage, page count, file paths — is filled in for you. Supply only
+> your judgment (focus areas, key requirements, the direct/transferable/adjacent
+> counts, reframings, gaps, differentiators, interview prep) and write it ONCE,
+> in that JSON. Writing a separate report file costs an extra turn for output
+> that is already known.
+
+**Interactive mode — create metadata file:**
 
 ```markdown
 # Resume Generation Report
@@ -1316,24 +1342,20 @@ Both are defensible. Which do you prefer?
 
 **Edge Case 6: Resume Length Constraints**
 ```
-SCENARIO: Too much good content, exceeds 2 pages
+SCENARIO: Too much good content — build_resume.py reports OVERFULL
+
+The target is ONE full, tight page (see the one-page rule in 4.1). There is
+no 2-page option. build_resume.py tells you exactly how many rendered lines
+to cut; make that cut in a single edit pass.
 
 HANDLING:
-"⚠️ Content exceeds 2 pages (current: {N} bullets, ~{pages} pages)
-
-PRUNING SUGGESTIONS (ranked by relevance):
-Remove:
+"⚠️ OVERFULL by ~{N} lines. Cutting the {N} lowest-relevance rendered lines:
 - {Bullet X}: {score}% match (lowest)
 - {Bullet Y}: {score}% match
-...
+..."
 
-Keep all bullets and accept >2 pages?
-OR
-Remove {N} bullets to fit 2 pages?
-
-Your preference?"
-
-[User decides priority]
+[In AUTONOMOUS mode: cut them and rebuild once — do not ask.
+ In interactive mode: confirm the cut list with the user first.]
 ```
 
 **Error Recovery:**

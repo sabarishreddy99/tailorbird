@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "portfolio": {
+      "type": "http",
+      "url": "https://api.jayaremala.com/mcp"
+    }
+  }
+}

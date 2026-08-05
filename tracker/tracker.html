@@ -133,6 +133,16 @@
   .agentbar .banner b { color: var(--ink); }
   .agentbar .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
   .agentbar .rev-link { color: var(--c-review); font-weight: 600; cursor: pointer; }
+  .agentbar .pick { display: inline-flex; align-items: center; gap: 5px;
+                    color: var(--muted); font-size: 13px; }
+  .agentbar .pick select { font: inherit; padding: 3px 6px; }
+  /* Base-session freshness: amber = the primed session no longer matches the
+     data or the selected model, so it must be rebuilt before the next run. */
+  .agentbar .dot.stale { background: var(--c-review); }
+  .agentbar .dot.fresh { background: var(--c-offer); }
+  #baseSources td { padding: 2px 10px 2px 0; color: var(--muted); }
+  #baseSources td.chg { color: var(--c-review); font-weight: 600; }
+  #reprimeBtn.stale { border-color: var(--c-review); color: var(--c-review); font-weight: 600; }
   .sched summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   .sched[open] summary { color: var(--ink); }
   .sched .body { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
@@ -628,6 +638,26 @@
     <button class="ghost" id="dryBtn">Dry run</button>
     <span class="banner" id="agentBanner">agent idle</span>
     <span class="sep"></span>
+    <label class="pick" title="Model the authoring agent runs on. Changing it needs a fresh base session — prompt caches are model-scoped.">model
+      <select id="modelSel"></select>
+    </label>
+    <label class="pick" title="Reasoning effort. Reasoning bills as output tokens, so this is the biggest cost lever — but it can affect quality, so A/B it before making it the norm.">effort
+      <select id="effortSel"></select>
+    </label>
+    <span class="sep"></span>
+    <details class="sched" id="basePanel">
+      <summary><span class="dot" id="baseDot"></span>Base session</summary>
+      <div class="body" style="flex-direction:column;align-items:flex-start;gap:8px">
+        <div class="banner" id="baseSummary">checking…</div>
+        <div id="baseReasons" style="font-size:12px;color:var(--muted);line-height:1.5"></div>
+        <table id="baseSources" style="font-size:12px;border-collapse:collapse"></table>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="ghost" id="reprimeBtn">Refresh base session</button>
+          <span class="banner" id="baseCache"></span>
+        </div>
+      </div>
+    </details>
+    <span class="sep"></span>
     <details class="sched" id="sched">
       <summary>Schedule</summary>
       <div class="body">
@@ -826,6 +856,19 @@
           <b>Schedule</b> panel, even while your laptop sits idle.
         </div>
         <div class="card">
+          <h3>🎛 You pick the model</h3>
+          Choose which model writes your résumés from the <b>model</b> dropdown in the agent
+          bar, and optionally how hard it thinks. Opus is the default and the safest for
+          quality; lighter models are there when you want speed or lower cost.
+        </div>
+        <div class="card">
+          <h3>♻️ Tells you when to refresh</h3>
+          The agent keeps one warm <b>base session</b> loaded with your facts, boundaries and
+          style rules so each job stays cheap. If you edit those, or switch model, the dot
+          next to <b>Base session</b> turns amber, because the warm copy is now out of date.
+          One click on <b>Refresh base session</b> re-reads everything from scratch.
+        </div>
+        <div class="card">
           <h3>📊 Tracks every application</h3>
           One table for the whole search: date, company, role, fit %, résumé PDF, and
           status. Open or copy any résumé's path in a click, filter, sort, search, and move
@@ -833,8 +876,9 @@
         </div>
         <div class="card">
           <h3>🪵 Shows its work</h3>
-          The <b>Logs</b> tab streams live progress and past-run summaries, with the cost
-          and time each run took, so nothing is a black box.
+          The <b>Logs</b> tab streams live progress and past-run summaries, with the cost and
+          time each run took, which base résumé it started from, and how many steps it
+          needed, so nothing is a black box.
         </div>
         <div class="card">
           <h3>🔒 Keeps your data yours</h3>
@@ -1808,11 +1852,101 @@ $("rows").closest(".tablewrap").addEventListener("scroll", () => {
 });
 addEventListener("beforeunload", saveUI);
 
+/* ---------- model / effort selection ---------- */
+// Source names and staleness reasons are built from file paths on disk, so they
+// are escaped before going anywhere near innerHTML.
+const esc = s => String(s ?? "").replace(/[&<>"']/g,
+  c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Persisted locally so a reload keeps the choice; the server is the authority on
+// which values are valid.
+const pickedModel  = () => localStorage.getItem("tb.model")  || "opus";
+const pickedEffort = () => localStorage.getItem("tb.effort") || "default";
+
+function fillPickers(models, efforts) {
+  const ms = $("modelSel"), es = $("effortSel");
+  if (ms && !ms.options.length && models) {
+    ms.innerHTML = models.map(m => `<option value="${m.id}">${m.label}</option>`).join("");
+    ms.value = pickedModel();
+    ms.onchange = () => { localStorage.setItem("tb.model", ms.value); refreshBase(); };
+  }
+  if (es && !es.options.length && efforts) {
+    es.innerHTML = efforts.map(e =>
+      `<option value="${e}">${e === "default" ? "default (inherit)" : e}</option>`).join("");
+    es.value = pickedEffort();
+    es.onchange = () => { localStorage.setItem("tb.effort", es.value); refreshBase(); };
+  }
+}
+
+/* ---------- base session freshness ---------- */
+// The primed base session holds the skill + the shared candidate context so each
+// role reads it as a cache hit. That is only safe while it still matches the data
+// on disk AND the selected model, so the UI surfaces both and offers a rebuild.
+let baseStale = false;
+
+async function refreshBase() {
+  try {
+    const q = `?model=${encodeURIComponent(pickedModel())}&effort=${encodeURIComponent(pickedEffort())}`;
+    const s = await api("/api/session" + q);
+    fillPickers(s.models, s.efforts);
+    baseStale = !!s.stale;
+
+    $("baseDot").className = "dot " + (s.stale ? "stale" : "fresh");
+    $("reprimeBtn").className = "ghost" + (s.stale ? " stale" : "");
+    $("baseSummary").innerHTML = s.session_id
+      ? `<b>${s.short_id}</b> · ${s.model || "model n/a"} · effort ${s.effort}`
+        + ` · ${s.uses} role(s) served · primed ${s.age_min}m ago`
+      : "<b>none</b> — the first run will build one";
+    $("baseReasons").innerHTML = s.stale
+      ? s.reasons.map(r => "⚠ " + esc(r)).join("<br>")
+      : "Up to date with the data on disk and the selected model.";
+    $("baseCache").textContent = s.cache_note || "";
+
+    // Sources are listed so it is obvious WHAT the refresh will re-read, and
+    // which of them actually forces a rebuild vs is picked up automatically.
+    $("baseSources").innerHTML = (s.sources || []).map(x => {
+      const changed = x.name === "resumes" ? s.corpus_changed
+                                           : (s.stale && (s.reasons.join(" ").includes(x.name)));
+      const size = x.name === "mcp" ? (x.files ? "attached" : "none")
+                                    : `${x.files} file(s)`;
+      return `<tr><td class="${changed ? "chg" : ""}" title="${esc(x.note)}">`
+           + `${changed ? "●" : "○"} ${esc(x.name)}</td>`
+           + `<td>${size}</td><td>${x.bytes ? Math.round(x.bytes / 1024) + " KB" : ""}</td>`
+           + `<td>${x.affects_prime ? "needs re-prime" : "auto on next run"}</td></tr>`;
+    }).join("");
+
+    // Nudge on the main bar too, so it is visible without opening the panel.
+    if (s.stale && !/started|running/.test($("agentBanner").textContent))
+      $("agentBanner").innerHTML = "base session <b>stale</b> — refresh before running";
+  } catch { $("baseSummary").textContent = "base session status unavailable"; }
+}
+
+async function reprime() {
+  const btn = $("reprimeBtn");
+  btn.disabled = true;
+  $("baseSummary").textContent = "rebuilding from current data…";
+  try {
+    await api("/api/reprime", "POST", { model: pickedModel(), effort: pickedEffort() });
+    switchTab("logs");            // the refresh logs which sources it re-read
+    setTimeout(refreshLog, 800);
+    // Priming takes ~15-20s; poll until the fingerprint clears.
+    let n = 0;
+    const t = setInterval(async () => {
+      await refreshBase(); refreshLog();
+      if (++n > 20 || !baseStale) { clearInterval(t); btn.disabled = false; }
+    }, 3000);
+  } catch {
+    $("baseSummary").textContent = "refresh failed to start";
+    btn.disabled = false;
+  }
+}
+
 /* ---------- agent controls ---------- */
 async function runAgent(dry) {
   // Authoring runs one role at a time through a single reused session; concurrency is fixed.
   try {
-    await api("/api/run-agent", "POST", { concurrency: 1, dry_run: !!dry });
+    await api("/api/run-agent", "POST", { concurrency: 1, dry_run: !!dry,
+                                          model: pickedModel(), effort: pickedEffort() });
     $("agentBanner").textContent = dry ? "dry run started…" : "agent started…";
     $("runBtn").disabled = true;
     switchTab("logs");                 // jump to the live log so progress is visible
@@ -1887,6 +2021,7 @@ async function saveSchedule() {
 $("runBtn").onclick = () => runAgent(false);
 $("dryBtn").onclick = () => runAgent(true);
 $("schedSave").onclick = saveSchedule;
+$("reprimeBtn").onclick = reprime;
 
 /* ---------- tabs + logs ---------- */
 let logTimer = null;
@@ -1940,6 +2075,10 @@ setupColResize();
 load();
 pollAgent();
 loadSchedule();
+refreshBase();
+// Data on disk changes outside the UI (the skill appends to LIBRARY.md, resumes
+// get added), so re-check freshness periodically rather than only on load.
+setInterval(refreshBase, 30000);
 scheduleRev();
 </script>
 </body>

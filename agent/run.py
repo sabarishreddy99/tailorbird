@@ -29,7 +29,6 @@ a sequential run because each role gets its own dedicated skill invocation.
 import argparse
 import concurrent.futures as cf
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -47,6 +46,7 @@ import ats
 import screen
 import report
 import library
+import session
 
 ROOT = Path(__file__).resolve().parent.parent
 QUEUE = ROOT / "job_queue.json"
@@ -54,11 +54,33 @@ LIBRARY = ROOT / "resumes" / "_index" / "LIBRARY.md"
 UPDATE_QUEUE = ROOT / "tracker" / "update_queue.py"
 RUNLOCK = ROOT / "agent" / ".lock"
 STAGING = ROOT / "agent" / "runs" / "staging"
-SESSION_FILE = ROOT / "agent" / "runs" / "session.json"  # persistent primed base session
-SKILL_INSTALL = Path.home() / ".claude" / "skills" / "resume-tailoring"
+# Primed-base state (id, model, source fingerprints, freshness) lives in
+# agent/session.py so the tracker UI can read and act on it too.
 
 FETCH_POOL = 8
 SKILL_TIMEOUT = 900  # 15 min per role
+# Reasoning effort for the authoring session. None = inherit the CLI default
+# (unchanged behaviour). Opus reasoning tokens bill as OUTPUT, so this is the
+# largest single cost lever -- but it is also the only one that can plausibly
+# move quality, so it stays opt-in via --effort until an A/B says otherwise.
+EFFORT = None
+# Authoring model. Pinned because --setting-sources drops the user's
+# settings.json (which is where "model": "opus" lived); without this the CLI
+# default silently resolved to Sonnet.
+MODEL = "opus"
+
+
+def resolve_model(name):
+    """'inherit' means: use whatever ~/.claude/settings.json says, but pass it
+    EXPLICITLY. We cannot just omit --model, because --setting-sources drops the
+    file that defines it and the CLI default is not the user's choice."""
+    if name != "inherit":
+        return name
+    try:
+        cfg = json.loads((Path.home() / ".claude" / "settings.json").read_text())
+        return cfg.get("model") or "opus"
+    except Exception:
+        return "opus"
 
 LOGFILE = None  # set once run_id is known; the Logs tab tails this per-run file.
 _LOG_LOCK = threading.Lock()  # run_skill workers stream events -> concurrent log() writers.
@@ -192,6 +214,11 @@ def parse_usage(env):
     return {
         "new_tok": inp + out + cc,
         "cache_tok": cr,
+        # Split out of the new_tok lump: on Opus, reasoning bills as OUTPUT, so
+        # this is usually the single largest cost line and was invisible before.
+        "out_tok": out,
+        "cc_tok": cc,
+        "in_tok": inp,
         "sec": round((env.get("duration_ms") or 0) / 1000),
         "turns": env.get("num_turns"),
         "cost": env.get("total_cost_usd"),
@@ -214,6 +241,8 @@ def _describe_tool(name, inp):
         if "build_resume.py" in cmd:
             return "🖨️  building PDF/DOCX"
         return f"⚙️  {cmd[:60]}"
+    if name.startswith("mcp__"):
+        return f"🔌 portfolio lookup: {name.split('__')[-1]}"
     if name in ("Grep", "Glob"):
         return "🔍 searching files"
     if name == "Task":
@@ -238,7 +267,7 @@ def _stream_skill(cmd, prompt, company):
 
     timer = threading.Timer(SKILL_TIMEOUT, _kill)
     timer.start()
-    result_evt, counts, tail = None, {"research": 0, "builds": 0}, []
+    result_evt, counts, tail = None, {"research": 0, "builds": 0, "mcp": 0, "tools": {}}, []
     try:
         proc.stdin.write(prompt)
         proc.stdin.close()
@@ -257,10 +286,21 @@ def _stream_skill(cmd, prompt, company):
                     bt = block.get("type")
                     if bt == "tool_use":
                         name, inp = block.get("name", ""), block.get("input") or {}
+                        # Which tools burn the turns? (edit churn was invisible before)
+                        counts["tools"][name] = counts["tools"].get(name, 0) + 1
+                        if name.startswith("mcp__"):
+                            counts["mcp"] += 1
                         if name in ("WebSearch", "WebFetch"):
                             counts["research"] += 1
                         elif name == "Bash" and "build_resume.py" in (inp.get("command") or ""):
                             counts["builds"] += 1
+                            # build_resume.py now reports the fit gap in lines, so one
+                            # sized edit should land it. A 3rd build means the edit was
+                            # not sized to the number -- surface it instead of silently
+                            # burning turns (this loop cost $3.02/50 turns on one role).
+                            if counts["builds"] == 3:
+                                log(f"    [{company}] ⚠️  3rd PDF build - fit-gap convergence "
+                                    f"is not working; check the FIT line handling")
                         desc = _describe_tool(name, inp)
                         if desc:
                             log(f"    [{company}] {desc}")
@@ -289,62 +329,99 @@ def _stream_skill(cmd, prompt, company):
 
 def _base_cmd():
     """Flags shared by the prime AND every job fork. MUST be identical between
-    them or the cached prefix (system prompt + skill) won't be reused."""
-    return ["--strict-mcp-config", "--permission-mode", "bypassPermissions",
-            "--add-dir", str(ROOT)]
+    them or the cached prefix (system prompt + skill) won't be reused.
 
+    --setting-sources project: without it the CLI loads ~/.claude/settings.json,
+    whose enabled plugins (frontend-design, vercel, figma) inject every one of
+    their skill descriptions into the system prompt of every session. Measured on
+    a no-op prompt: 19.6k -> 13.2k prefix tokens. That prefix is re-read on every
+    turn, so it pays back per turn, for every role in the queue.
 
-def _skill_hash():
-    """Fingerprint the installed skill so we re-prime when it is edited."""
-    if not SKILL_INSTALL.exists():
-        return ""
-    h = hashlib.sha256()
-    for p in sorted(SKILL_INSTALL.rglob("*.md")):
-        try:
-            h.update(p.name.encode()); h.update(p.read_bytes())
-        except Exception:
-            pass
-    return h.hexdigest()[:16]
+    --model is then REQUIRED, not optional: dropping user settings also drops
+    their `"model": "opus"`, and the CLI default resolved to Sonnet. Pinning it
+    keeps authoring on exactly the model it ran on before. Verified by asking
+    each configuration which model it was running as.
+    """
+    cmd = ["--strict-mcp-config", "--permission-mode", "bypassPermissions",
+           "--add-dir", str(ROOT), "--setting-sources", "project",
+           "--model", MODEL]
+    # --strict-mcp-config means "load ONLY what this flag names", so the servers
+    # in agent/mcp.json are the complete set - nothing is auto-discovered from
+    # ~/.claude.json or a repo .mcp.json. Passed to the prime AND every fork
+    # because tools render at the very front of the prompt: a mismatch here
+    # would invalidate the whole cached prefix rather than just adding tools.
+    if session.MCP_CONFIG.exists():
+        cmd += ["--mcp-config", str(session.MCP_CONFIG)]
+    if EFFORT:
+        cmd += ["--effort", EFFORT]
+    return cmd
 
 
 def prime_session(sid):
-    """Warm a persistent base session that loads the skill exactly once."""
-    warm = ("Load the /resume-tailoring:resume-tailoring skill so it is ready for use, then "
-            "reply with exactly READY and nothing else. Do not tailor anything yet.")
+    """Warm a persistent base session that loads the skill exactly once AND
+    carries the role-invariant authoring context for the whole queue.
+
+    The candidate facts / boundaries / style rules are byte-identical for every
+    role, so holding them here makes them a cache READ per job instead of ~8k
+    tokens of cache CREATION re-paid on every single resume.
+    """
+    mcp = ""
+    if session.MCP_CONFIG.exists() and session.mcp_servers():
+        mcp = (
+            "\n\n## Live portfolio lookup (MCP: "
+            + ", ".join(session.mcp_servers()) + ")\n"
+            "You also have mcp__portfolio__* tools backed by the candidate's own live "
+            "portfolio API (experience, projects, skills, education, blog, apps).\n"
+            "Use it SPARINGLY and only to look up a specific fact the per-role kit does "
+            "not carry, e.g. the detail of a project the JD asks about. Prefer "
+            "search_knowledge for open questions and the get_* tools for structured facts.\n"
+            "IMPORTANT: the Truthfulness Boundaries above still govern everything. The "
+            "portfolio is a lookup, not permission to widen a claim: if the boundaries say "
+            "a technology is NOT held, it stays absent from the resume no matter what the "
+            "portfolio returns. Never let a lookup introduce a claim the boundaries "
+            "exclude, and never spend a call on something the kit already answers.")
+
+    warm = ("Load the /resume-tailoring:resume-tailoring skill so it is ready for use.\n\n"
+            "Then hold the following context for every resume you author in this session. "
+            "You will receive one small per-role kit per job; everything below is shared "
+            "and will NOT be repeated, so do not ask for it again and do not open "
+            "resumes/_index/LIBRARY.md.\n\n"
+            + library.build_prime_context() + mcp +
+            "\n\nReply with exactly READY and nothing else. Do not tailor anything yet.")
     cmd = [claude_bin(), "-p", "--session-id", sid, "--output-format", "json"] + _base_cmd()
     try:
         r = subprocess.run(cmd, input=warm, cwd=str(ROOT), capture_output=True,
-                           text=True, timeout=180)
+                           text=True, timeout=300)
         return r.returncode == 0
     except Exception:
         return False
 
 
 def ensure_base_session(force=False):
-    """Return a persistent base session id with the skill already loaded, priming
-    once if needed. Returns None if priming fails (caller falls back to fresh
-    sessions, still MCP-free). Persisted so the base is reused across jobs and
-    across runs until the installed skill changes."""
-    want = _skill_hash()
-    if not force and SESSION_FILE.exists():
-        try:
-            st = json.loads(SESSION_FILE.read_text())
-            if st.get("session_id") and st.get("skill_hash") == want:
-                log(f"  reusing primed session {st['session_id'][:8]}… (skill already loaded)")
-                return st["session_id"]
-        except Exception:
-            pass
+    """Return a persistent base session id with the skill + shared candidate
+    context already loaded, priming once if needed. Returns None if priming fails
+    (caller falls back to fresh sessions, still MCP-free).
+
+    Reused across jobs AND across runs until session.status() says it is stale -
+    which covers edited skill files, an edited LIBRARY.md, or a switch of model
+    or effort (prompt caches are model-scoped, so reusing a session primed on a
+    different model would silently throw the cached prefix away).
+    """
+    st = session.status(model=MODEL, effort=EFFORT)
+    if not force and not st["stale"]:
+        log(f"  reusing primed session {st['short_id']}… "
+            f"(model={st['model']}, {st['uses']} role(s) served, "
+            f"cache {'warm' if st['cache_warm'] else 'cold'})")
+        return st["session_id"]
+    for why in st["reasons"]:
+        log(f"  re-prime needed: {why}")
     sid = str(uuid.uuid4())
-    log(f"  priming session {sid[:8]}… (loading the skill one time for the whole queue)")
+    log(f"  priming session {sid[:8]}… (model={MODEL}, effort={EFFORT or 'default'}; "
+        f"re-reading skill + LIBRARY from disk, one time for the whole queue)")
     if not prime_session(sid):
         log("  prime failed; falling back to a fresh session per job (still MCP-free).")
         return None
-    try:
-        SESSION_FILE.write_text(json.dumps(
-            {"session_id": sid, "skill_hash": want,
-             "primed_at": datetime.now().isoformat(timespec="seconds")}, indent=2))
-    except Exception:
-        pass
+    session.write(sid, MODEL, EFFORT)
     return sid
 
 
@@ -363,8 +440,15 @@ def run_skill(row, job, run_id, base_uuid=None):
         out_path.unlink()
 
     # Pre-assemble the skill's own token-efficient inputs (pure Python, 0 tokens).
-    kit = library.build_kit(job.get("text", ""), row.get("company", ""))
-    kit_path.write_text(kit["kit_text"], encoding="utf-8")
+    # The role-INVARIANT half already lives in the primed base session; only fold
+    # it back in when running without one, or the author would lose the
+    # truthfulness boundaries and style rules entirely.
+    kit = library.build_job_kit(job.get("text", ""), row.get("company", ""),
+                                job.get("title", "") or row.get("role", ""))
+    kit_text = kit["kit_text"]
+    if not base_uuid:
+        kit_text = library.build_prime_context() + "\n\n---\n\n" + kit_text
+    kit_path.write_text(kit_text, encoding="utf-8")
     research = ("Research ONLY what the JD itself does not tell you and that materially "
                 "affects tailoring (an unfamiliar product/team, domain jargon, or a genuine "
                 "coverage gap). The full JD is already provided, so do NOT spend searches on "
@@ -374,9 +458,10 @@ def run_skill(row, job, run_id, base_uuid=None):
                 "company. Tailor from the JD + kit unless you find a real gap.")
 
     skill_intro = (
-        "Using the /resume-tailoring:resume-tailoring skill ALREADY LOADED in this session "
-        "(do NOT re-open or re-read the skill files — they are already in context), tailor "
-        "ONE resume"
+        "Using the /resume-tailoring:resume-tailoring skill and the shared candidate "
+        "context ALREADY LOADED in this session (do NOT re-open or re-read the skill "
+        "files or the candidate facts/boundaries/style rules — they are already in "
+        "context), tailor ONE resume"
         if base_uuid else
         "Use the /resume-tailoring:resume-tailoring skill to tailor ONE resume")
     prompt = f"""{skill_intro} in AUTONOMOUS EXPRESS mode (no interactive checkpoints; take the
@@ -385,24 +470,33 @@ skill's recommended option and proceed).
 Role URL: {row['url']}
 Company hint: {row.get('company','')}
 Job description (full text): {jd_path}
-Authoring kit (candidate facts, archetype table, boundaries, style rules, and the CHOSEN
-BASE RESUME to delta-edit): {kit_path}
+Per-role kit (scored archetype table + the CHOSEN BASE RESUME to delta-edit): {kit_path}
 
 Follow the skill for tailoring quality, but take its token-efficient path:
-- Everything you need is in the kit. Do NOT open resumes/_index/LIBRARY.md and do NOT
-  scan the resumes/ folder.
-- Start from the CHOSEN BASE RESUME in the kit and delta-edit it (switch base only if the
-  archetype table shows a clearly better fit).
+- The JD and the kit are the only two files you need to read. Do NOT open
+  resumes/_index/LIBRARY.md and do NOT list or scan the resumes/ folder.
+- Start from the CHOSEN BASE RESUME in the kit and delta-edit it. The kit's archetype
+  table is scored but keyword-based and is wrong roughly a third of the time, so if the
+  JD clearly fits another row, switch to it and read ONLY that one file.
 - {research}
-- Build with resumes/_assets/build_resume.py and TRUST its text output for the one-page
-  check ("N page(s)", "UNDERFILLED", "WARNING"). Do NOT render or read screenshots.
+- Build with resumes/_assets/build_resume.py and TRUST its text output. It prints ONE
+  quantified fit line giving the gap in rendered lines:
+    FIT: ... slack ~N line(s). Ship it        -> done; do NOT edit or rebuild again.
+    OVERFULL: ~N line(s) too long             -> cut ~N rendered lines, ONE edit, rebuild once.
+    UNDERFILLED: room for ~N more line(s)     -> add ~N rendered lines, ONE edit, rebuild once.
+  A rendered line is ~110 characters of bullet text. Apply the whole correction in ONE
+  tool call: use MultiEdit, or re-Write the file, rather than a run of single Edit calls
+  (each one is a separate turn and they are the main cost of a resume). Then rebuild.
+  Budget: at most 2 builds and ~10 tool calls total. Do NOT re-read a file you just
+  wrote, and do NOT render or read screenshots.
 - Enforce the style rules: one tight page, NO em dashes, no literal ** inside skills
   lines, respect every Truthfulness Boundary.
-- Save md + report to resumes/{{Company}}/ and the pdf to resumes/pdfs/{{Company}}/, using a
+- Save the md to resumes/{{Company}}/ and the pdf to resumes/pdfs/{{Company}}/, using a
   Title-Case company folder (e.g. resumes/Brex/, NOT resumes/brex/) to match the library.
+  Do NOT write a _Report.md file: it is rendered for you from the JSON below.
 
 Concurrency: do NOT edit job_queue.json and do NOT append to LIBRARY.md. When done, write
-ONLY this JSON file:
+ONLY this JSON file (ONE write, no separate report file):
 {out_path}
 keys:
   outcome     "built" | "needs_review"
@@ -414,12 +508,26 @@ keys:
               (start "| {date.today().isoformat()} | ...").
   md_path     path (relative to repo root) of the resume .md you wrote
   pages       page count reported by build_resume.py (int)
+  report      object with ONLY your judgment (the scaffolding, dates, paths and
+              headings are filled in for you - do not restate them):
+                focus_areas        [str]  what this role actually centres on
+                key_requirements   [str]  the JD's top requirements
+                coverage_breakdown {{"direct": N, "transferable": N, "adjacent": N}}
+                reframing          [str]  "what changed -> why", one per line
+                gaps               [str]  unmet requirements and how you handled them
+                differentiators    [str]  why this candidate fits
+                interview_prep     [str]  stories to prepare, questions to expect
 
 If you cannot honestly build it (ambiguous eligibility, a central-language absence, or
 projected coverage below ~65%), set outcome="needs_review" with the reason and still write
 the JSON. Never fabricate experience."""
 
     company = row.get("company") or (job.get("title") or "role")
+    # Surface the pick so mis-picks are measurable rather than invisible: if the
+    # author keeps switching away from the top row, the scoring needs work.
+    log(f"    [{company}] archetype: {kit.get('archetype')} [{kit.get('confidence', 0):.2f}] "
+        f"-> {kit.get('base_rel')}  (runner-up {kit.get('runner_up_score') or 0:.2f}: "
+        f"{kit.get('runner_up')})")
     if base_uuid:
         cmd = [claude_bin(), "-p", "--resume", base_uuid, "--fork-session",
                "--output-format", "stream-json", "--verbose"] + _base_cmd()
@@ -431,6 +539,10 @@ the JSON. Never fabricate experience."""
 
     telem = parse_usage(result_evt)
     telem["research"], telem["builds"] = counts["research"], counts["builds"]
+    telem["mcp"] = counts["mcp"]
+    telem["tools"] = counts["tools"]
+    telem["effort"] = EFFORT or "default"
+    telem["kit_tok"] = len(kit_text) // 4
     if not out_path.exists():
         reason = "skill produced no result file"
         if tail:
@@ -446,6 +558,7 @@ the JSON. Never fabricate experience."""
     except json.JSONDecodeError:
         return {"outcome": "failed", "reason": "unreadable skill result file", "telem": telem}
     out["telem"] = telem
+    out["base_rel"] = kit.get("base_rel")
 
     # Deterministic post-build gate (replaces the vision check).
     if out.get("outcome") == "built":
@@ -461,6 +574,7 @@ the JSON. Never fabricate experience."""
 # --------------------------------------------------------------------- main
 
 def main():
+    global EFFORT, MODEL
     p = argparse.ArgumentParser()
     p.add_argument("--once", action="store_true", default=True)
     p.add_argument("--dry-run", action="store_true")
@@ -470,7 +584,22 @@ def main():
                         "primed session)")
     p.add_argument("--fresh-session", action="store_true",
                    help="rollback: a fresh MCP-free session per job (no primed-base reuse)")
+    p.add_argument("--effort", default=None,
+                   choices=["low", "medium", "high", "xhigh", "max"],
+                   help="reasoning effort for authoring (default: inherit the CLI's). "
+                        "Reasoning tokens bill as output, so this is the biggest cost "
+                        "lever - A/B it against the golden set before making it the norm.")
+    p.add_argument("--model", default=MODEL,
+                   help="authoring model, or 'inherit' to use settings.json "
+                        "(default: %(default)s)")
+    p.add_argument("--reprime", action="store_true",
+                   help="force a fresh prime before the queue, re-reading the "
+                        "skill and LIBRARY from disk")
+    p.add_argument("--reprime-only", action="store_true",
+                   help="rebuild the primed base session from current data and "
+                        "exit without processing the queue")
     a = p.parse_args()
+    EFFORT, MODEL = a.effort, resolve_model(a.model)
 
     RUNLOCK.parent.mkdir(parents=True, exist_ok=True)
     lock_fh = open(RUNLOCK, "w")
@@ -485,6 +614,26 @@ def main():
     LOGFILE = ROOT / "agent" / "runs" / f"{run_id}.log"
     LOGFILE.parent.mkdir(parents=True, exist_ok=True)
     started = datetime.now().isoformat(timespec="seconds")
+
+    if a.reprime_only:
+        # Rebuild the shared base from whatever is on disk right now. This runs
+        # in a fresh process, so every source (skill files, LIBRARY.md, the
+        # resume corpus) is re-read from disk - there is no stale in-process
+        # cache to bust.
+        st = session.status(model=MODEL, effort=EFFORT)
+        log(f"refresh: rebuilding the primed base session (model={MODEL}, "
+            f"effort={EFFORT or 'default'})")
+        for s in st["sources"]:
+            log(f"  source: {s['name']:<9} {s['files']:>3} file(s), "
+                f"{s['bytes'] // 1024:>4} KB  [{s['hash']}]")
+        session.invalidate()
+        sid = ensure_base_session(force=True)
+        if sid:
+            log(f"refresh: done - base session {sid[:8]}… primed from current data")
+            return 0
+        log("refresh: FAILED to prime; the next run will retry")
+        return 1
+
     rows = load_queued(a.only)
     mode = "fresh session/job" if a.fresh_session else "one primed session, serial"
     log(f"run {run_id}: {len(rows)} queued role(s) ({mode})"
@@ -534,7 +683,7 @@ def main():
     # the skill is loaded once and reused (cache reads) instead of re-created per
     # job. Commits happen in the parent, already serialized.
     if builds:
-        base_uuid = None if a.fresh_session else ensure_base_session()
+        base_uuid = None if a.fresh_session else ensure_base_session(force=a.reprime)
         how = "reusing one primed session" if base_uuid else "fresh session each"
         log(f"  building {len(builds)} role(s) one at a time ({how})...")
         for row, job, _ in builds:
@@ -548,6 +697,8 @@ def main():
                     out = run_skill(row, job, run_id, base_uuid)
             except Exception as e:
                 out = {"outcome": "failed", "reason": f"worker error: {e}"}
+            if base_uuid:
+                session.touch()   # drives the UI's cache-warmth + roles-served readout
             outcome = out.get("outcome", "failed")
             company = out.get("company") or company
             role = out.get("role") or role
@@ -555,6 +706,11 @@ def main():
             reason = out.get("reason", "")
             telem = out.get("telem") or {}
             if outcome == "built":
+                # The _Report.md is rendered here from the result JSON instead of
+                # being a second model-authored file (saves a write turn per role).
+                rp = report.write_report(out, out.get("base_rel"))
+                if rp:
+                    log(f"    [{company}] report: {rp.name}")
                 upsert(company, role, "resume_ready", row["url"], coverage=cov,
                        notes=f"agent: {reason}"[:300], pdf=find_pdf(company))
                 append_history(out.get("history_row", ""))
@@ -583,14 +739,24 @@ def main():
                 where.append(f"{telem['cache_tok'] // 1000}k cache-read")
             if telem.get("new_tok"):
                 where.append(f"{telem['new_tok'] // 1000}k fresh")
+            # Reasoning bills as output on Opus, so this is usually the biggest
+            # cost line -- keep it visible next to the lump figure.
+            if telem.get("out_tok"):
+                where.append(f"{telem['out_tok'] // 1000}k output")
             if telem.get("research") is not None:
                 where.append(f"{telem['research']} web search(es)")
             if telem.get("builds") is not None:
                 where.append(f"{telem['builds']} PDF build(s)")
+            if telem.get("mcp"):
+                where.append(f"{telem['mcp']} portfolio lookup(s)")
             if telem.get("turns"):
                 where.append(f"{telem['turns']} turns")
             if where:
                 log(f"    [{company}] breakdown: " + " · ".join(where))
+            tools = telem.get("tools") or {}
+            if tools:
+                log(f"    [{company}] tools: " + " · ".join(
+                    f"{k} x{v}" for k, v in sorted(tools.items(), key=lambda kv: -kv[1])))
             # Live status: refresh the banner/counts as each role finishes.
             report.write_status("running", run_id, results, started=started)
 

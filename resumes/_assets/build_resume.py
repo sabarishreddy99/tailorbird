@@ -219,6 +219,122 @@ def page_count(pdf_path):
     raw = open(pdf_path, "rb").read()
     return len(re.findall(rb"/Type\s*/Page(?![s/])", raw))
 
+
+# ---------------------------------------------------------------- fit magnitude
+# The density ladder tells us whether the resume fits; on its own it does NOT say
+# by HOW MUCH. Without a magnitude the author cannot size a correction, so it
+# converges by trial: edit a clause, rebuild, edit another, rebuild... (observed:
+# 7 consecutive edits + 2 builds on one resume, 15 builds on another). The ladder
+# bracket already contains the answer -- content height scales ~linearly with
+# line-height, so the gap between the densest rung that fits and the next one
+# that doesn't IS the slack, expressed as a fraction of a page. Multiply by the
+# rendered line count and you get the gap in the unit the author actually edits.
+
+CHARS_PER_LINE = 112          # 9.4pt Calibri across the 7.66in content column
+BULLET_CHARS_PER_LINE = 108   # bullets sit inside ul{margin-left:13pt}
+TIGHT_LH = 1.19               # below this the page reads full; at/above it reads sparse
+# Oversized elements, in body-line equivalents (h1 16pt, h2 10.5pt + rule +
+# margins, .company 10.5pt, .proj-title 10.2pt).
+H1_LINES, H2_LINES, COMPANY_LINES, PROJ_LINES = 1.8, 1.6, 1.15, 1.12
+
+def est_lines(doc):
+    """Approximate rendered line count, in body-line equivalents.
+
+    Only used to convert a page-height FRACTION (which the ladder bracket gives
+    us exactly) into lines, the unit the author edits in. Constants were fitted
+    against real builds so that adding one rendered line moves the reported gap
+    by one line; see the slope check in the module docstring's verification note.
+    """
+    def wrapped(text, width=CHARS_PER_LINE):
+        return max(1, -(-len(text) // width))  # ceil
+    n = H1_LINES + 1.0  # name + contact
+    for sec in doc["sections"]:
+        n += H2_LINES
+        if sec["type"] == "paragraph":
+            n += wrapped(sec["text"])
+        elif sec["type"] in ("experience", "projects"):
+            for e in sec["entries"]:
+                n += COMPANY_LINES if sec["type"] == "experience" else PROJ_LINES
+                n += 1 if e.get("subline") else 0
+                n += 1 if e.get("tech") else 0
+                n += sum(wrapped(b, BULLET_CHARS_PER_LINE) for b in e["bullets"])
+        elif sec["type"] == "skills":
+            n += sum(wrapped("%s: %s" % (s["cat"], s["items"])) for s in sec["lines"])
+        elif sec["type"] == "education":
+            n += sum(wrapped(l) for l in sec["lines"])
+    return n
+
+def _bracket(probe, rungs):
+    """Binary-search a dense->generous rung list for the fit boundary. Returns
+    (lh_pass, lh_fail) as floats, either of which may be None at the ends.
+    Binary search keeps this to ~log2(n) Chrome launches instead of a walk."""
+    lo, hi, best = 0, len(rungs) - 1, -1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if probe(rungs[mid]) == 1:
+            best, lo = mid, mid + 1
+        else:
+            hi = mid - 1
+    lh_pass = float(rungs[best]) if best >= 0 else None
+    lh_fail = float(rungs[best + 1]) if best + 1 < len(rungs) else None
+    return lh_pass, lh_fail
+
+
+def measure_fit(doc, memo, best, render_pages, ladder):
+    """Return a one-line human+agent readable fit report with the gap in lines.
+
+    Common case costs ZERO extra Chrome launches: the binary search has already
+    probed the rung just above `best` (that is what terminated it), so the
+    bracket is sitting in `memo`. Only the two extreme cases -- fits even at the
+    most generous rung, or overflows even at the densest -- need extra probes,
+    and those are exactly the cases where the author needs the number most.
+    """
+    n = est_lines(doc)
+    if n <= 0:
+        return ""
+
+    def probe(lh):
+        if lh not in memo:
+            memo[lh] = render_pages(lh)
+        return memo[lh]
+
+    # Case A: overflows even at the densest shipping rung -> probe DOWN to find
+    # where it would fit. The rungs are ~0.025 apart so one rung is ~1.5 lines;
+    # taking the MIDPOINT of the resulting bracket (rather than the first rung
+    # that happens to fit) keeps the estimate unbiased.
+    if best < 0:
+        dense = float(ladder[0])
+        lh_pass, lh_fail = _bracket(
+            probe, ("0.80", "0.85", "0.90", "0.94", "0.97", "1.00", "1.025", "1.05"))
+        if lh_pass is None:
+            return ("OVERFULL: more than ~%d lines too long -- cut a whole entry or section, "
+                    "then rebuild once." % max(2, round(n * 0.25)))
+        edge = lh_pass if lh_fail is None else (lh_pass + lh_fail) / 2.0
+        over = n * (1 - edge / dense)
+        return ("OVERFULL: ~%.1f line(s) too long -- cut ~%d bullet line(s) or one short "
+                "entry, then rebuild once." % (over, max(1, round(over))))
+
+    lh_pass = float(ladder[best])
+
+    # Case B: fits even at the most generous shipping rung -> probe UP to find
+    # where it stops fitting, so "underfilled" gets a number instead of a flag.
+    if best == len(ladder) - 1:
+        top, fail = _bracket(probe, ("1.35", "1.4", "1.45", "1.5", "1.6", "1.8", "2.0"))
+        top = lh_pass if top is None else top
+        edge = top if fail is None else (top + fail) / 2.0
+        room = n * (edge / TIGHT_LH - 1)
+        return ("UNDERFILLED: room for ~%d more line(s) before the page is full -- add "
+                "relevant content in the priority order, then rebuild once." % max(1, round(room)))
+
+    # Case C (the common one): the bracket is already known -- free.
+    lh_fail = float(ladder[best + 1])
+    slack = n * (lh_fail - lh_pass) / lh_pass / 2.0   # midpoint of the bracket
+    if lh_pass >= TIGHT_LH:
+        room = n * (lh_pass / TIGHT_LH - 1)
+        return ("UNDERFILLED: room for ~%d more line(s) before the page is full -- add "
+                "relevant content in the priority order, then rebuild once." % max(1, round(room)))
+    return "FIT: one full page, slack ~%.1f line(s). Ship it -- do not rebuild." % slack
+
 def main():
     md_path = os.path.abspath(sys.argv[1])
     outdir = os.path.abspath(sys.argv[sys.argv.index("--outdir") + 1]) if "--outdir" in sys.argv else os.path.dirname(md_path)
@@ -258,6 +374,9 @@ def main():
             hi = mid - 1                 # overflows -> must go denser
 
     lh = LADDER[best] if best >= 0 else LADDER[0]
+    # Measure the fit gap BEFORE the authoritative render: the probes below reuse
+    # render_pages() and would otherwise leave a measurement PDF on disk.
+    fit = measure_fit(doc, memo, best, render_pages, LADDER)
     pages = render_pages(lh)             # authoritative final render leaves the chosen PDF on disk
     # Safety net: if that render disagrees with the search (rare non-monotonic layout),
     # step denser until it fits so we never emit a 2-page PDF when a denser one would fit.
@@ -273,6 +392,10 @@ def main():
     elif float(lh) >= 1.2:
         print("NOTE: UNDERFILLED page (fits at line-height %s). Full-page rule: add relevant "
               "content (restore a trimmed entry, add a project or bullets) for a tight full page." % lh)
+    # The magnitude line: size ONE edit pass from this instead of converging by
+    # trial-and-rebuild. See measure_fit().
+    if fit:
+        print(fit)
 
     # DOCX via node generator
     docx_doc = dict(doc)

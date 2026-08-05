@@ -34,6 +34,7 @@ in **`resumes/_index/LIBRARY.md`**, and every generated résumé is stored under
 
 - [Why Tailorbird (inspiration & who it helps)](#why-tailorbird-inspiration--who-it-helps)
 - [Quick start](#quick-start)
+- [UI Overview](#ui-overview)
 - [How it works — a 4-step walkthrough](#how-it-works--a-4-step-walkthrough)
 - [Prerequisites](#prerequisites)
 - [Installation (step by step, per device)](#installation-step-by-step-per-device)
@@ -125,8 +126,8 @@ demo queue).
 ### 1. Start with your queue
 
 Launch the tracker (`python3 tracker/tracker.py`) and open `http://localhost:8765`. The top
-bar is where you paste job URLs; below it the **agent bar** (Run agent / Dry run /
-parallelism / Schedule) and the **Queue / Logs / About** tabs. The queue is a dense,
+bar is where you paste job URLs; below it the **agent bar** (Run agent / Dry run / model
++ effort pickers / Base session / Schedule) and the **Queue / Logs / About** tabs. The queue is a dense,
 inline-editable ledger — every field autosaves.
 
 ![The Tailorbird queue: paste bar, agent controls, and the editable job ledger](docs/images/step1_queue.png)
@@ -293,31 +294,56 @@ works: fetch → screen → skill authoring → PDF/DOCX → tracker row.
 ## Architecture
 
 ```
-                    ┌───────────────────────── Tracker UI (browser) ─────────────────────────┐
-                    │  add URLs · Run agent · Logs tab · needs_review review · Schedule panel   │
-                    └───────────────┬───────────────────────────────┬──────────────────────────┘
-                                    │ POST /api/run-agent            │ POST /api/schedule
-                                    ▼                                ▼
-                        tracker/tracker.py  ──spawn──►      agent/schedule.py ──►  launchd plist
-                        (localhost:8765, stdlib)                                  (background runs)
-                                    │
-                                    ▼   python3 agent/run.py --once
-   ┌──────────────────────────── agent/run.py (orchestrator, pure Python, 0 tokens) ───────────────────────────┐
-   │ 1. load queue        job_queue.json → rows where status == "queued"                                        │
-   │ 2. fetch JD          agent/ats.py    → any ATS host (Greenhouse/Ashby/Lever/Workday/... + generic fallback)│
-   │ 3. screen            agent/screen.py → HARD_DROP | NEEDS_REVIEW | BUILD   (regex, no model)   [PARALLEL ≤8]│
-   │      ├─ HARD_DROP    → tracker: dropped        + LIBRARY history row                                       │
-   │      ├─ NEEDS_REVIEW → tracker: needs_review   + reason                                                    │
-   │      └─ BUILD ▼                                                                                            │
-   │ 4. build kit         agent/library.py → compact context (archetype + base résumé + boundaries)            │
-   │ 5. author            claude -p  "/resume-tailoring …"  (real skill; SERIAL, one primed session reused)     │
-   │ 6. gate + commit     deterministic checks (page count, em-dash, ...) → tracker: resume_ready + LIBRARY row │
-   │ 7. report            agent/report.py → agent/runs/<ts>.md + status.json (+ per-role cost/tokens/time)      │
-   └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼  build tooling (reused, no LLM)
-                    resumes/_assets/build_resume.py  → PDF (headless Chrome, 1-page auto-fit) + DOCX (gen_docx.js)
+              ┌─────────────────────────── Tracker UI (browser) ───────────────────────────┐
+              │ add URLs · Run agent · model/effort pickers · Base session panel · Logs     │
+              └──────┬──────────────────┬──────────────────────┬────────────────────────────┘
+                     │ /api/run-agent   │ /api/reprime         │ /api/schedule
+                     ▼                  ▼                      ▼
+              tracker/tracker.py ─spawn─┴──►  agent/run.py      agent/schedule.py → launchd
+              (localhost:8765, stdlib)                          (background runs)
+                     │
+                     ▼   python3 agent/run.py --once [--model M] [--effort E]
+ ┌──────────────────────── agent/run.py (orchestrator, pure Python, 0 tokens) ─────────────────────────┐
+ │ 1. load queue     job_queue.json → rows where status == "queued"                                     │
+ │ 2. fetch JD       agent/ats.py    → any ATS host (Greenhouse/Ashby/Lever/Workday/… + generic)        │
+ │ 3. screen         agent/screen.py → HARD_DROP | NEEDS_REVIEW | BUILD  (regex, no model) [PARALLEL ≤8]│
+ │      ├─ HARD_DROP    → tracker: dropped      + LIBRARY history row                                   │
+ │      ├─ NEEDS_REVIEW → tracker: needs_review + reason                                                │
+ │      └─ BUILD ▼                                                                                       │
+ │ 4. ensure base    agent/session.py → is the primed session still valid for this data + model?        │
+ │ 5. per-role kit   agent/library.py → scored archetype table + the ONE chosen base résumé (~2.6k tok) │
+ │ 6. author         claude -p --resume <base> --fork-session   (SERIAL, one primed session reused)     │
+ │ 7. gate + commit  deterministic checks (pages, em-dash, …) → tracker: resume_ready + LIBRARY row     │
+ │ 8. report         agent/report.py → run summary, status.json, and the per-résumé _Report.md          │
+ └───────────────────────────────────────────────────────────────────────────────────────────────────┘
+                     │                                        │
+                     ▼  build tooling (reused, no LLM)         ▼  optional live lookup
+   resumes/_assets/build_resume.py                       agent/mcp.json → MCP server(s)
+   → PDF (headless Chrome, 1-page auto-fit) + DOCX       attached to the base session only
+   → quantified FIT line (gap in rendered lines)
 ```
+
+### The primed base session
+
+Authoring is serial on purpose. The `/resume-tailoring` skill **and** the role-invariant
+candidate context (facts, truthfulness boundaries, style rules) are loaded **once** into a
+primed base session; every role then runs as a clean `--resume <base> --fork-session`
+child. That prefix is therefore a **cache read** (~0.1× price) per role instead of being
+re-created for each one, and no role ever sees another role's résumé.
+
+`agent/session.py` owns whether that reuse is still safe. It fingerprints every source the
+prefix was built from and marks the session **stale** when any of them moves:
+
+| source | affects the prime? | on change |
+|---|---|---|
+| the 5 loaded skill `.md` files | yes | re-prime |
+| the curated slices of `LIBRARY.md` | yes | re-prime |
+| `agent/mcp.json` (attached MCP servers) | yes | re-prime |
+| selected **model** or **effort** | yes | re-prime (prompt caches are model-scoped) |
+| `resumes/**` base résumés | no | picked up on the next run automatically |
+
+The UI shows this as a green/amber dot with a **Refresh base session** button; the CLI
+equivalent is `--reprime` (before a queue) or `--reprime-only` (rebuild and exit).
 
 **Key idea:** ~80% of the work is deterministic (fetch, screen, build, commit) and runs
 as plain Python at **zero tokens and zero permission prompts**. The model is invoked
@@ -338,10 +364,12 @@ tailorbird/
 │   ├── run.py                     ← entry point / CLI; drives the whole pipeline
 │   ├── ats.py                     ← fetch a JD from any posting URL (adapters + generic fallback)
 │   ├── screen.py                  ← regex eligibility/fit classifier → HARD_DROP|NEEDS_REVIEW|BUILD
-│   ├── library.py                 ← builds the compact per-role "kit" from LIBRARY.md
-│   ├── report.py                  ← run-log (agent/runs/<ts>.md) + status.json + telemetry
+│   ├── library.py                 ← invariant prime context + the compact per-role kit
+│   ├── session.py                 ← primed-session state & staleness (shared with the UI)
+│   ├── report.py                  ← run-log + status.json + telemetry + per-résumé _Report.md
 │   ├── schedule.py                ← macOS launchd install/enable/disable/status
-│   └── runs/                      ← run-logs, status.json, per-run .log, staging/ scratch
+│   ├── mcp.json                   ← MCP servers attached to the base session (optional)
+│   └── runs/                      ← run-logs, status.json, session.json, staging/ scratch
 │
 ├── tracker/                       ← the control-surface web app (stdlib)
 │   ├── tracker.py                 ← HTTP server (localhost:8765) + JSON API
@@ -440,15 +468,18 @@ to `resumes/pdfs/{Company}/`.
    `agent/runs/session.json`); each BUILD role then runs **one at a time** as a clean
    `--resume <base> --fork-session` child, so the skill + system prefix is a cache *read*
    per job instead of being recreated. For each role, `run_skill()`:
-   - `library.build_kit()` pre-assembles a compact context (chosen base résumé + archetype
-     table + boundaries + style rules) and a research directive, written to a kit file.
-   - Invokes `claude -p --resume <base> --fork-session --strict-mcp-config --output-format
-     stream-json --permission-mode bypassPermissions --add-dir <repo>` (no MCP servers load)
+   - `library.build_job_kit()` pre-assembles the small per-role context — the archetype
+     table scored against this JD plus the one chosen base résumé — and a research
+     directive, written to a kit file. The invariant half (candidate facts, boundaries,
+     style rules) is already in the primed session and is **not** repeated here.
+   - Invokes `claude -p --resume <base> --fork-session` with the flags from `_base_cmd()`,
      running the already-loaded `/resume-tailoring` skill over the kit + JD.
-   - The skill authors the `.md` + report, builds the PDF/DOCX with `build_resume.py`, and
-     writes a small **staging JSON** (`outcome`, `company`, `role`, `coverage`, `reason`,
-     `history_row`, `md_path`, `pages`). It does **not** touch `job_queue.json` or
-     `LIBRARY.md` (the parent commits those, serialized, to avoid races).
+   - The skill authors the `.md`, builds the PDF/DOCX with `build_resume.py` (sizing any
+     correction from its quantified fit line), and writes a single **staging JSON**
+     (`outcome`, `company`, `role`, `coverage`, `reason`, `history_row`, `md_path`,
+     `pages`, plus a `report` object of judgment fields the parent renders into
+     `_Report.md`). It does **not** touch `job_queue.json` or `LIBRARY.md` (the parent
+     commits those, serialized, to avoid races).
 6. **Quality gate + commit (parent):** deterministic checks on the produced `.md`
    (one page per `build_resume.py`, no em-dashes, no literal `**` inside skills lines). On
    pass → `resume_ready` + PDF path recorded + LIBRARY history appended. On fail → `needs_review`.
@@ -478,30 +509,60 @@ and flat ranges, and ignores year ranges like `5-8 years`.
 
 ## Token & time optimizations
 
-The only expensive step is the per-role skill run. It's kept cheap without lowering quality:
+The only expensive step is the per-role skill run. Across 20 completed builds, cost is
+almost perfectly linear in **turn count** (≈ **$0.058 and ≈2.5k fresh tokens per turn**),
+so every lever below either removes turns or shrinks the context those turns re-read.
 
-- **Load the skill once, reuse it per job** — the queue is authored serially through a
-  single **primed base session**: the `/resume-tailoring` skill is loaded one time, then
-  each role runs as a clean `--resume <base> --fork-session` child, so the skill + system
-  prefix is a **cache read** (~0.1× price) per job instead of being recreated every time.
-  The base persists in `agent/runs/session.json` and is reused across runs until the skill
-  changes. Measured on a real build: fresh tokens dropped **77k → 42k** and cost **$1.23 →
-  $0.92** for the same role, with the one-time prime amortized across the whole queue.
-- **No unused MCP servers** — every invocation passes `--strict-mcp-config`, so the six MCP
-  servers that would otherwise load (Gmail, Drive, Calendar, Vercel, Figma, …) — none of
-  which résumé tailoring uses — never enter a session's context.
-- **Compact "kit" instead of the whole library** — `library.py` slices `LIBRARY.md` down
-  to just the authoring-relevant sections + the one nearest base résumé (~9K tokens vs
-  ~35K for the full library), and tells the run not to re-read the library or scan the
-  résumé folder. This is exactly the skill's own documented token-efficient path,
-  pre-assembled.
+Measured before/after on the same two roles:
+
+| role | before | after |
+|---|---|---|
+| Reddit — SWE, Ads | 18 turns · 2 builds · **$1.56** · 90k fresh · 237s | 7 turns · 1 build · **$0.55** · 25k fresh · 124s |
+| Baton — SWE, MLOps | 50 turns · 15 builds · **$3.02** · 133k fresh · 609s | 13 turns · 2 builds · **$1.30** · 77k fresh · 270s |
+
+Both "after" runs paid a full one-time prime; a real multi-role queue amortizes it.
+Quality gates were identical in every case: one page, style gate clean, no truthfulness
+boundary violated, coverage equal or better.
+
+- **A quantified fit signal, so the résumé converges in one edit** — `build_resume.py` used
+  to report page fit as a *binary* ("1 page" / "UNDERFILLED" / "WARNING: 2 pages"). With no
+  magnitude the author could not size a correction, so it converged by trial: 7 consecutive
+  edits on one résumé, 15 rebuilds on another. It now reports the gap **in rendered lines**
+  (`OVERFULL: ~4.3 line(s) too long — cut ~4 bullet line(s)`), derived free from the
+  density ladder's existing bracket. Follow the number once and it lands.
+- **One edit call, not a run of them** — a "single edit pass" that removes five clauses is
+  still five `Edit` turns. The run prompt asks for `MultiEdit`/re-`Write` instead, which
+  took Baton from 18 → 13 turns on its own.
+- **Load the skill once, reuse it per job** — the primed base session described above. The
+  invariant candidate context (~8.3k tokens, byte-identical for every role) moved *into*
+  that prefix, so it is a cache read per role rather than ~8.3k tokens of cache creation
+  re-paid on every résumé.
+- **A small per-role kit** — `library.py` now ships only what varies: the full archetype
+  table in compact score-ordered form plus the one chosen base résumé (**~2.6k tokens**,
+  down from ~9.8k). Dropping the table's verbose `angle` column shrank it from ~4.2k to
+  ~1.06k tokens while keeping **all 47 rows**, so the author can switch base without
+  listing the résumé folder.
+- **A lean session prefix** — `--setting-sources project` keeps unrelated global plugins out
+  of the system prompt (19.6k → 13.2k prefix tokens). `--model` is then passed explicitly,
+  because dropping user settings also drops the model they set.
+- **MCP servers are opt-in and prefix-scoped** — `--strict-mcp-config` means nothing loads
+  unless `agent/mcp.json` names it. Attaching a server costs ~485 prefix tokens and, being
+  in the primed prefix, is a cache read per role.
 - **Gated research** — the JD is already fetched and passed in; web research runs only for
   unfamiliar companies / new archetypes / low projected coverage.
-- **Text + grep verification** — the one-page/quality check uses `build_resume.py`'s text
-  output plus deterministic greps, instead of rendering and reading a screenshot.
-- **Honest telemetry** — `claude -p --output-format json` usage is parsed into **cost** and
-  **fresh tokens** (input + output + cache-creation), shown per role and per run. Cache
-  *reads* are tracked separately (they are cheap and would otherwise inflate the number).
+- **Text verification, never screenshots** — the one-page/quality check uses
+  `build_resume.py`'s text output plus deterministic greps.
+- **No model tokens for boilerplate** — the per-résumé `_Report.md` is rendered by
+  `report.py` from the result JSON; the model supplies only its judgment, in one write.
+- **Honest telemetry** — usage is parsed into **cost**, **fresh tokens** (input + output +
+  cache-creation) and **output tokens** separately, plus a per-run tool histogram. Output is
+  broken out because on Opus **reasoning bills as output**, which makes it the largest single
+  line item and was previously invisible. Cache *reads* are tracked apart (cheap, and they
+  would otherwise inflate the headline number).
+
+> **Biggest remaining lever:** reasoning effort. `--effort` is wired end to end (CLI and UI)
+> but **defaults to unchanged**, because it is the one setting that can plausibly move
+> quality. A/B it against a golden set before making a lower effort the norm.
 
 ---
 
@@ -524,11 +585,26 @@ themes. Features:
     / delete.
   - **Auto-refresh**: when the agent updates a row on disk, the table reloads in place and
     flashes "updated by agent" — but never while you're typing in a field.
-- **Agent bar** — Run agent, Dry run, parallelism control, a live status banner (running /
-  last-run counts + cost/tokens/time), and a **Schedule** panel (a real on/off toggle;
-  set times + concurrency to install/enable a macOS launchd job entirely from the UI).
+- **Agent bar** — Run agent, Dry run, a live status banner (running / last-run counts +
+  cost/tokens/time), plus:
+  - **Model picker** — `opus` (default) / `sonnet` / `haiku` / *inherit from settings.json*.
+    The choice persists locally and is passed explicitly to the run; `inherit` is resolved
+    to a concrete id rather than omitted, because `--setting-sources` drops the file that
+    would otherwise define it.
+  - **Effort picker** — `default` / `low` … `max`. Left at `default` unless you deliberately
+    A/B it; reasoning bills as output tokens.
+  - **Base session panel** — a green/amber dot for the primed session, its id, model, effort,
+    roles served and age; the list of sources it was built from and whether each one
+    *needs re-prime* or is picked up *auto on next run*; a cache-warmth note; and a
+    **Refresh base session** button that rebuilds it from current data. It turns amber (and
+    the main banner says so) whenever the skill files, the curated `LIBRARY.md` slices, the
+    MCP config, or the selected model/effort no longer match what was primed.
+  - **Schedule** panel — a real on/off toggle; set times to install/enable a macOS launchd
+    job entirely from the UI.
 - **Logs tab** — a live tail of the current run, a list of past runs (click to read the
-  summary), and a plain-language legend of the stages/verdicts.
+  summary), and a plain-language legend of the stages/verdicts. Per-role lines include the
+  archetype that was picked (with its runner-up), the token/cost breakdown, and a tool
+  histogram so it is obvious where the turns went.
 
 ---
 
@@ -545,7 +621,9 @@ Served by `tracker/tracker.py` on `http://localhost:8765` (localhost-only).
 | DELETE | `/api/jobs/<id>` | delete one row |
 | GET | `/api/rev` | `{rev, count}` cheap change-poll (drives auto-refresh) |
 | GET | `/api/statuses` | the status list (drives the UI dropdowns) |
-| POST | `/api/run-agent` | spawn `agent/run.py --once --concurrency N` (`{concurrency, dry_run}`) |
+| POST | `/api/run-agent` | spawn `agent/run.py --once` (`{concurrency, dry_run, model, effort, reprime}`) |
+| GET | `/api/session` | primed-session state: `stale`, `reasons[]`, `sources[]`, model/effort, cache warmth, and the valid `models`/`efforts` lists. Takes `?model=&effort=` so a mismatch with the current selection is reported |
+| POST | `/api/reprime` | rebuild the primed base session from current data (`{model, effort}`) → `agent/run.py --reprime-only` |
 | GET | `/api/agent-status` | idle/running + counts + totals + per-role results |
 | GET | `/api/agent-log` | live tail of the current/most-recent run log |
 | GET | `/api/runs` | list past run summaries |
@@ -560,9 +638,18 @@ Served by `tracker/tracker.py` on `http://localhost:8765` (localhost-only).
 
 ### `agent/run.py`
 Orchestrator + CLI. Flags: `--once` (default), `--dry-run`, `--only <url>`,
-`--concurrency N`. Owns the parallel fetch/screen pools, the serialized commit, the
-deterministic quality gate (`style_violations`), telemetry parsing (`parse_usage`), and
-the run lock (`agent/.lock`).
+`--model <m|inherit>`, `--effort <low…max>`, `--reprime`, `--reprime-only`,
+`--fresh-session`, `--concurrency N` (vestigial; authoring is serial). Owns the parallel
+fetch/screen pools, the serialized commit, the deterministic quality gate
+(`style_violations`), telemetry parsing (`parse_usage`), and the run lock (`agent/.lock`).
+`_base_cmd()` holds the flags that **must be byte-identical between the prime and every
+fork**, or the cached prefix is thrown away instead of reused.
+
+### `agent/session.py`
+`status(model, effort)`, `sources()`, `fingerprint()`, `write()`, `touch()`,
+`invalidate()`, `mcp_servers()`. The freshness authority for the primed base session,
+shared by the runner and the tracker UI. Run `python3 agent/session.py` to dump the
+current state as JSON.
 
 ### `agent/ats.py`
 `fetch(url) → {title, location, comp, text, removed, source}`. Fast-path adapters for
@@ -577,14 +664,21 @@ unresolved one (returns "unresolved" → NEEDS_REVIEW rather than "removed").
 `perm_markers`, `years_ceiling`). Pure regex. Run `python3 agent/screen.py` for a smoke test.
 
 ### `agent/library.py`
-`build_kit(jd_text, company) → {kit_text, base_rel, archetype, confidence, research}`.
-Slices `LIBRARY.md` to authoring-relevant sections, picks the nearest archetype/base by
-keyword overlap, and decides whether research should run. Run
-`python3 agent/library.py <jd_file> <company>` to inspect a kit.
+Splits the authoring context in two, because ~80% of it is identical for every role:
+`build_prime_context()` (invariant candidate facts, boundaries, style rules — loaded once
+into the primed session) and
+`build_job_kit(jd_text, company, title) → {kit_text, base_rel, archetype, confidence,
+research, runner_up}` (per role). `score_archetypes(jd_text, title)` ranks every base by
+TF-IDF over the archetype label and the base résumé's own text, weighted by how rare each
+term is across the corpus — plain keyword overlap rewarded verbose labels and treated
+`ads` as no more informative than `engineering`. Run
+`python3 agent/library.py <jd_file> <company> "<title>"` to inspect both halves.
 
 ### `agent/report.py`
-`write_status()`, `write_runlog()`, `read_status()`. Atomic writes so the UI never reads a
-half-written file.
+`write_status()`, `write_runlog()`, `read_status()`, plus `render_report()` /
+`write_report()`, which build the per-résumé `_Report.md` from the result JSON so the
+model spends output tokens only on judgment, not on scaffolding it already knows. Atomic
+writes so the UI never reads a half-written file.
 
 ### `agent/schedule.py`
 `status()`, `enable(times, concurrency)`, `disable()`. Generates
@@ -598,11 +692,24 @@ and refuses to regress a status. This is how both the skill and the agent write 
 
 ### `resumes/_assets/build_resume.py`
 `python3 resumes/_assets/build_resume.py <resume.md> [--outdir DIR]` → PDF (headless
-Chrome; auto-fits one page via a line-height density ladder, warns if it still overflows)
-+ DOCX (via `gen_docx.js`). Prints an authoritative text signal (`N page(s)`,
-`UNDERFILLED`, `WARNING`) that the agent's gate relies on. Chrome is auto-detected
-(override: `TAILORBIRD_CHROME`). The canonical input format is documented in
-`resumes/_assets/RESUME_TEMPLATE.example.md` — copy it to start a base résumé.
+Chrome; auto-fits one page via a line-height density ladder) + DOCX (via `gen_docx.js`).
+
+Prints the legacy signals (`N page(s)`, `UNDERFILLED`, `WARNING`) **plus one quantified
+fit line** giving the gap in rendered lines, which is what the author sizes a correction
+from:
+
+```
+FIT: one full page, slack ~0.9 line(s). Ship it -- do not rebuild.
+OVERFULL: ~4.3 line(s) too long -- cut ~4 bullet line(s) or one short entry, then rebuild once.
+UNDERFILLED: room for ~10 more line(s) before the page is full -- add relevant content …
+```
+
+`measure_fit()` derives this from the density-ladder bracket the binary search already
+computed, so the common case costs **zero extra Chrome launches**; only the two extremes
+(fits at the most generous rung, or overflows at the densest) probe further — exactly the
+cases where the number matters most. Shipped PDFs are byte-identical to the previous
+builder. Chrome is auto-detected (override: `TAILORBIRD_CHROME`). The canonical input
+format is documented in `resumes/_assets/RESUME_TEMPLATE.example.md`.
 
 ---
 
@@ -656,13 +763,16 @@ python3 tracker/tracker.py     # http://localhost:8765
 **Agent from the CLI:**
 ```bash
 python3 agent/run.py --dry-run                 # preview classifications
-python3 agent/run.py --once --concurrency 3    # process the queue
+python3 agent/run.py --once                    # process the queue
 python3 agent/run.py --only "https://…"        # one URL
+python3 agent/run.py --once --model sonnet     # pick the authoring model
+python3 agent/run.py --reprime-only            # rebuild the primed base session
+python3 agent/session.py                       # inspect base-session freshness
 ```
 
 **Background schedule (macOS):**
 ```bash
-python3 agent/schedule.py enable --times 09:00,13:00,18:00 --concurrency 3
+python3 agent/schedule.py enable --times 09:00,13:00,18:00
 python3 agent/schedule.py status
 python3 agent/schedule.py disable
 # (or do all of this from the tracker's Schedule panel)
@@ -686,7 +796,7 @@ means editing those — not the code.
   - **Candidate Facts** — verified, stable facts about you (name, contact, years, degrees).
   - **Role Archetypes → Nearest Saved Résumé** — the table mapping each target archetype to
     a base résumé file. Add/rename rows here to match the roles you apply for;
-    `library.pick_archetype` reads it directly.
+    `library.score_archetypes` reads it directly.
   - **Discovered Experiences** — skills/projects already confirmed, so the agent won't
     re-interview you about them.
   - **Truthfulness Boundaries** — the hard limits the skill will not cross. Tighten these and
@@ -720,7 +830,11 @@ means editing those — not the code.
   `resume_ready` — it never advances `applied` or beyond (submission stays yours).
 - **No fabrication**: the skill enforces the Truthfulness Boundaries in `LIBRARY.md`;
   when it can't honestly reach coverage it routes to `needs_review` instead of inventing
-  experience.
+  experience. This holds for attached MCP servers too — the prime prompt states that the
+  boundaries govern any live lookup, and that a lookup is never permission to widen a claim.
+- **Nothing loads that you didn't name**: every invocation passes `--strict-mcp-config`, so
+  the only MCP servers in a session are the ones in `agent/mcp.json` (none by default).
+  Unrelated globally-installed servers and plugins stay out of the agent entirely.
 - **Concurrency-safe**: `agent/.lock` prevents overlapping runs; `update_queue.py` and the
   LIBRARY-append go through locks/serialized parent commits so parallel builds can't
   corrupt or interleave shared files.
@@ -738,10 +852,27 @@ means editing those — not the code.
 - **New screening rule** — add a check in `agent/screen.py` (`classify`) and a smoke case
   in its `__main__`.
 - **New résumé archetype** — add a row to the "Role Archetypes" table in
-  `resumes/_index/LIBRARY.md` pointing at a base résumé; `library.pick_archetype` picks it
-  up automatically.
+  `resumes/_index/LIBRARY.md` pointing at a base résumé; `library.score_archetypes` picks it
+  up automatically (no re-prime needed — base résumés are not part of the primed prefix).
 - **New lifecycle status** — add it to `STATUSES` in both `tracker/tracker.py` and
   `tracker/update_queue.py` (the UI reads `/api/statuses`).
+- **Attach an MCP server** — add it to `agent/mcp.json`:
+
+  ```json
+  { "mcpServers": { "portfolio": { "type": "http", "url": "https://example.com/mcp" } } }
+  ```
+
+  The base session flips to **stale**; hit **Refresh base session** (or run
+  `python3 agent/run.py --reprime-only`) and its tools become available to every role as
+  `mcp__<name>__*`. Because the config is passed to the prime *and* every fork, the tool
+  definitions live in the cached prefix — a ~500-token one-off rather than a per-role cost.
+
+  Two things to keep in mind. It is deliberately **not** a repo-root `.mcp.json`, which
+  would also be auto-loaded into every interactive Claude Code session in this repo. And a
+  live data source can be **broader than your Truthfulness Boundaries** — the prime prompt
+  states that the boundaries still govern and that a lookup is never permission to widen a
+  claim, but it is worth reconciling the two if you attach something that reports skills or
+  experience.
 
 ---
 
@@ -768,10 +899,21 @@ means editing those — not the code.
   timer. Everything else (tracker, agent, PDF/DOCX build) is cross-platform.
 - The `/resume-tailoring` skill is a vendored copy of a third-party plugin (`skill/`); the
   canonical upstream is its own repo, so pull updates from there if you want the latest.
-- `pick_archetype` uses keyword overlap; the skill can override the pre-picked base, but a
-  poor pick on an unusual JD may still need a human eye (that's what `needs_review` is for).
+- **Archetype picking is statistical, not semantic.** On a 15-case set labelled from real
+  Application-History rows, TF-IDF scoring gets top-1 in 4 and top-3 in 8 — better than the
+  previous keyword overlap (2 and 6), but still wrong roughly a third of the time, because
+  choosing a base is a judgment call. The design absorbs that rather than pretending
+  otherwise: the per-role kit ships **all 47 archetypes** compactly, so the author can
+  switch base without listing the résumé folder, and the ordering is a hint. Log lines show
+  the pick and its runner-up so drift is measurable.
+- **`build_resume.py`'s line-gap is an estimate.** The page-height bracket is exact; turning
+  it into "lines" uses a fitted text model (~112 chars/line), calibrated so that adding one
+  rendered line moves the reported gap by ~0.96. Good enough to size one edit pass, not a
+  layout engine.
 - Telemetry depends on `claude -p --output-format json` fields; it degrades gracefully to
   "no numbers" if the format changes.
+- **Reasoning effort is unmeasured.** `--effort` is plumbed through but defaults to
+  unchanged; the claim that a lower effort is free is untested against a golden set.
 
 ---
 

@@ -34,6 +34,78 @@ def now_id():
     return datetime.now().strftime("%Y-%m-%d-%H%M%S")
 
 
+def _bullets(items, empty="_none_"):
+    items = [str(i).strip() for i in (items or []) if str(i).strip()]
+    return "\n".join(f"- {i}" for i in items) if items else empty
+
+
+def render_report(out, base_rel=None):
+    """Render the per-resume _Report.md from the staging JSON.
+
+    The report used to be a separate model-authored file: ~975 words per resume,
+    costing an extra write turn plus output tokens for scaffolding the parent
+    already knows (company, role, date, base used, coverage, page count, file
+    paths). Now the model emits only its JUDGMENT as `report` fields inside the
+    single result JSON it already writes, and the structure is filled in here for
+    free. Returns markdown, or "" if the model supplied no judgment fields.
+    """
+    r = out.get("report") or {}
+    if not any(r.get(k) for k in
+               ("focus_areas", "key_requirements", "reframing", "gaps",
+                "differentiators", "interview_prep", "coverage_breakdown")):
+        return ""
+    cov = r.get("coverage_breakdown") or {}
+    lines = [
+        "# Resume Generation Report",
+        f"**{out.get('role', '')} at {out.get('company', '')}**",
+        "",
+        f"**Date generated:** {datetime.now():%Y-%m-%d}",
+        f"**Base resume:** `{base_rel or r.get('base') or 'n/a'}`",
+        f"**Overall JD coverage:** {out.get('coverage', 'n/a')}"
+        f"  ·  **{out.get('pages', '?')} page**",
+        "",
+        "## Target role",
+        _bullets(r.get("focus_areas")),
+        "",
+        "## Key requirements",
+        _bullets(r.get("key_requirements")),
+        "",
+        "## Content mapping",
+        _bullets([f"{k.replace('_', ' ').title()}: {v}" for k, v in cov.items()]),
+        "",
+        "## Reframing applied",
+        _bullets(r.get("reframing")),
+        "",
+        "## Gaps and how they were handled",
+        _bullets(r.get("gaps")),
+        "",
+        "## Key differentiators",
+        _bullets(r.get("differentiators")),
+        "",
+        "## Interview prep",
+        _bullets(r.get("interview_prep")),
+        "",
+        "---",
+        f"_{out.get('reason', '')}_" if out.get("reason") else "",
+    ]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_report(out, base_rel=None):
+    """Write the rendered report next to the resume .md. Returns the path or None."""
+    md = render_report(out, base_rel)
+    md_path = out.get("md_path")
+    if not md or not md_path:
+        return None
+    target = ROOT / md_path
+    target = target.with_name(target.stem + "_Report.md")
+    try:
+        _atomic_write(target, md)
+        return target
+    except Exception:
+        return None
+
+
 def write_status(state, run_id, results=None, started=None, log_path=None):
     results = results or []
     counts = {"total": len(results)}
