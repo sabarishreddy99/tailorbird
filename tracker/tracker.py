@@ -114,7 +114,25 @@ STATUSES = [
 
 # Fields the UI is allowed to write. Anything else in a PATCH body is ignored,
 # so a stale or malformed client cannot invent columns or overwrite "id".
-EDITABLE = {"company", "role", "coverage", "status", "url", "notes", "date"}
+EDITABLE = {"company", "role", "coverage", "status", "url", "notes", "date", "jd_file"}
+
+# Pasted job descriptions live in sidecar files, not in job_queue.json. A JD is
+# ~5KB and /api/jobs returns every row on each poll, so inlining them would bloat
+# both the queue file and every refresh. The row carries only a path.
+JD_DIR = ROOT / "agent" / "jds"
+
+
+def jd_path(job_id):
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", job_id or "")
+    return JD_DIR / f"{safe}.txt"
+
+
+def read_jd(row):
+    p = ROOT / row["jd_file"] if row.get("jd_file") else jd_path(row.get("id"))
+    try:
+        return p.read_text(encoding="utf-8")
+    except Exception:
+        return ""
 
 
 def seed_from_library():
@@ -196,6 +214,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
         m = re.match(r"^/api/jobs/([^/]+)$", self.path)
         return m.group(1) if m else None
 
+    def _jd_id(self):
+        m = re.match(r"^/api/jobs/([^/]+)/jd$", self.path)
+        return m.group(1) if m else None
+
+    def _jd_get(self, jid):
+        row = next((j for j in load()["jobs"] if j.get("id") == jid), None)
+        if row is None:
+            self._send(404, json.dumps({"error": f"no job with id {jid}"}))
+            return
+        text = read_jd(row)
+        self._send(200, json.dumps({"ok": True, "text": text, "chars": len(text)},
+                                   ensure_ascii=False))
+
+    def _jd_put(self, jid):
+        """Attach (or clear) a pasted job description for one row.
+
+        Lets a posting the fetcher cannot read - a JS-rendered board, anything
+        behind a login - still be screened and authored from text the user
+        pasted. Written as a sidecar file so the queue stays small.
+        """
+        body, err = self._body()
+        if err:
+            self._send(400, json.dumps({"error": err}))
+            return
+        text = (body or {}).get("text") or ""
+        data = load()
+        for j in data["jobs"]:
+            if j.get("id") != jid:
+                continue
+            p = jd_path(jid)
+            if text.strip():
+                JD_DIR.mkdir(parents=True, exist_ok=True)
+                p.write_text(text, encoding="utf-8")
+                j["jd_file"] = str(p.relative_to(ROOT))
+            else:
+                p.unlink(missing_ok=True)
+                j.pop("jd_file", None)
+            save(data)
+            self._send(200, json.dumps({"ok": True, "job": j, "chars": len(text),
+                                        "rev": rev()}, ensure_ascii=False))
+            return
+        self._send(404, json.dumps({"error": f"no job with id {jid}"}))
+
     def _serve_pdf(self, rel):
         """Serve a résumé PDF from resumes/pdfs, inline so it opens in a tab.
         Resolved paths must stay inside PDFS_DIR (no traversal)."""
@@ -229,8 +290,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if pdf:
                     j["pdf"] = pdf
                     j["pdf_abs"] = str((PDFS_DIR / pdf).resolve())
+                # Size only, never the text: this response is re-fetched on every
+                # poll, and JDs are ~5KB each.
+                if j.get("jd_file"):
+                    try:
+                        j["jd_chars"] = (ROOT / j["jd_file"]).stat().st_size
+                    except Exception:
+                        j["jd_chars"] = 0
             data["rev"] = rev()
             self._send(200, json.dumps(data, ensure_ascii=False))
+        elif self._jd_id():
+            self._jd_get(self._jd_id())
         elif self.path.startswith("/pdf/"):
             self._serve_pdf(self.path[len("/pdf/"):])
         elif self.path == "/api/rev":
@@ -396,6 +466,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         """Update named fields on ONE job, leaving every other row untouched."""
+        if self._jd_id():
+            self._jd_put(self._jd_id())
+            return
         jid = self._job_id()
         if not jid:
             self._send(404, json.dumps({"error": "not found"}))
@@ -422,6 +495,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         data = load()
         before = len(data["jobs"])
+        jd_path(jid).unlink(missing_ok=True)   # don't orphan the sidecar
         data["jobs"] = [j for j in data["jobs"] if j.get("id") != jid]
         if len(data["jobs"]) == before:
             self._send(404, json.dumps({"error": f"no job with id {jid}"}))

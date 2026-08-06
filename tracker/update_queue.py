@@ -84,6 +84,7 @@ def main():
     p.add_argument("--status", required=True, choices=STATUSES)
     p.add_argument("--coverage", default="")
     p.add_argument("--url", default="")
+    p.add_argument("--id", default="", help="exact row id; strongest match signal")
     p.add_argument("--notes", default="")
     p.add_argument("--pdf", default="", help="résumé PDF path relative to resumes/pdfs")
     p.add_argument("--date", default=date.today().isoformat())
@@ -95,10 +96,17 @@ def main():
         data = load()
         jobs = data.setdefault("jobs", [])
 
-        # URL is the strongest identity signal: a row queued from the tracker UI
-        # has the URL but usually no role yet.
+        # Row id is exact, so it wins when the caller knows it. This matters for
+        # rows created from a PASTED job description, which may carry no URL at
+        # all: without an id those fall through to company matching and can
+        # silently update a different role at the same company.
         match = None
-        if a.url:
+        if a.id:
+            match = next((j for j in jobs if j.get("id") == a.id), None)
+
+        # URL is the next strongest signal: a row queued from the tracker UI
+        # has the URL but usually no role yet.
+        if match is None and a.url:
             match = next((j for j in jobs if j.get("url") and j["url"].strip() == a.url.strip()), None)
 
         if match is None:

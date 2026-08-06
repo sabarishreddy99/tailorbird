@@ -32,6 +32,9 @@
 # ============================================================
 /agent/runs/*
 !/agent/runs/.gitkeep
+# Pasted job descriptions are third-party posting text tied to your search.
+/agent/jds/*
+!/agent/jds/.gitkeep
 
 # ============================================================
 # Machine / editor / tooling noise.

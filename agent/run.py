@@ -106,12 +106,18 @@ def claude_bin():
     return shutil.which("claude") or str(Path.home() / ".local" / "bin" / "claude")
 
 
-def load_queued(only_url=None):
+def load_queued(only=None):
+    """Queued rows that have something to work from: a URL, or a pasted JD.
+
+    `only` matches a URL or a row id, so a pasted-JD row (which may have no URL
+    at all) can still be targeted directly.
+    """
     data = json.loads(QUEUE.read_text(encoding="utf-8"))
     rows = data.get("jobs", [])
-    if only_url:
-        return [r for r in rows if r.get("url") == only_url]
-    return [r for r in rows if r.get("status") == "queued" and r.get("url")]
+    if only:
+        return [r for r in rows if r.get("url") == only or r.get("id") == only]
+    return [r for r in rows
+            if r.get("status") == "queued" and (r.get("url") or r.get("jd_file"))]
 
 
 # ------------------------------------------------------- shared-file commits
@@ -129,9 +135,13 @@ def find_pdf(company):
     return ""
 
 
-def upsert(company, role, status, url, coverage="", notes="", pdf=""):
+def upsert(company, role, status, url, coverage="", notes="", pdf="", job_id=""):
     cmd = [sys.executable, str(UPDATE_QUEUE), "--company", company or "unknown",
            "--status", status, "--url", url]
+    if job_id:
+        # Exact identity. Rows built from a pasted JD may have no URL, and
+        # company-matching alone could hit a different role at the same company.
+        cmd += ["--id", job_id]
     if role:
         cmd += ["--role", role]
     if coverage:
@@ -164,8 +174,26 @@ def drop_history_row(company, role, reason):
 
 # ---------------------------------------------------------------- stage A/B
 
+def pasted_jd(row):
+    """Job description the user pasted in the UI, if any (agent/jds/<id>.txt)."""
+    rel = row.get("jd_file") or (f"agent/jds/{row['id']}.txt" if row.get("id") else "")
+    if not rel:
+        return ""
+    try:
+        return (ROOT / rel).read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
 def fetch_and_screen(row):
-    job = ats.fetch(row["url"])
+    # A pasted JD wins over the URL: the user supplies one precisely because the
+    # fetcher could not read that posting, so re-fetching would only overwrite
+    # good text with an empty shell.
+    text = pasted_jd(row)
+    if text.strip():
+        job = ats.from_text(text, title=row.get("role", ""), url=row.get("url", ""))
+    else:
+        job = ats.fetch(row["url"])
     verdict = screen.classify(job)
     return row, job, verdict
 
@@ -668,12 +696,14 @@ def main():
         company = row.get("company") or "unknown"
         role = row.get("role") or (job.get("title") or "").strip()
         if v["verdict"] == "HARD_DROP":
-            upsert(company, role, "dropped", row["url"], notes=f"agent: {v['reason']}")
+            upsert(company, role, "dropped", row["url"], notes=f"agent: {v['reason']}",
+                   job_id=row.get("id", ""))
             append_history(drop_history_row(company, role, v["reason"]))
             results.append({"company": company, "role": role, "url": row["url"],
                             "outcome": "dropped", "reason": v["reason"]})
         elif v["verdict"] == "NEEDS_REVIEW":
-            upsert(company, role, "needs_review", row["url"], notes=f"agent: {v['reason']}")
+            upsert(company, role, "needs_review", row["url"], notes=f"agent: {v['reason']}",
+                   job_id=row.get("id", ""))
             results.append({"company": company, "role": role, "url": row["url"],
                             "outcome": "needs_review", "reason": v["reason"]})
         else:
@@ -712,10 +742,12 @@ def main():
                 if rp:
                     log(f"    [{company}] report: {rp.name}")
                 upsert(company, role, "resume_ready", row["url"], coverage=cov,
-                       notes=f"agent: {reason}"[:300], pdf=find_pdf(company))
+                       notes=f"agent: {reason}"[:300], pdf=find_pdf(company),
+                       job_id=row.get("id", ""))
                 append_history(out.get("history_row", ""))
             elif outcome == "needs_review":
-                upsert(company, role, "needs_review", row["url"], notes=f"agent: {reason}"[:300])
+                upsert(company, role, "needs_review", row["url"], notes=f"agent: {reason}"[:300],
+                       job_id=row.get("id", ""))
             else:  # failed -> leave the row queued for the next run
                 log(f"  build FAILED {company}: {reason}")
             results.append({"company": company, "role": role, "url": row["url"],

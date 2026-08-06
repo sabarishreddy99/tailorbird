@@ -305,7 +305,7 @@ works: fetch → screen → skill authoring → PDF/DOCX → tracker row.
                      ▼   python3 agent/run.py --once [--model M] [--effort E]
  ┌──────────────────────── agent/run.py (orchestrator, pure Python, 0 tokens) ─────────────────────────┐
  │ 1. load queue     job_queue.json → rows where status == "queued"                                     │
- │ 2. fetch JD       agent/ats.py    → any ATS host (Greenhouse/Ashby/Lever/Workday/… + generic)        │
+ │ 2. fetch JD       agent/ats.py    → any ATS host (Greenhouse/Ashby/Lever/Workday/Workable/… + generic)        │
  │ 3. screen         agent/screen.py → HARD_DROP | NEEDS_REVIEW | BUILD  (regex, no model) [PARALLEL ≤8]│
  │      ├─ HARD_DROP    → tracker: dropped      + LIBRARY history row                                   │
  │      ├─ NEEDS_REVIEW → tracker: needs_review + reason                                                │
@@ -369,6 +369,7 @@ tailorbird/
 │   ├── report.py                  ← run-log + status.json + telemetry + per-résumé _Report.md
 │   ├── schedule.py                ← macOS launchd install/enable/disable/status
 │   ├── mcp.json                   ← MCP servers attached to the base session (optional)
+│   ├── jds/                       ← job descriptions pasted in the UI (sidecar per row)
 │   └── runs/                      ← run-logs, status.json, session.json, staging/ scratch
 │
 ├── tracker/                       ← the control-surface web app (stdlib)
@@ -416,13 +417,23 @@ The single source of truth for application lifecycle. Shape:
       "status": "resume_ready",
       "url": "https://boards.greenhouse.io/figma/jobs/5691911004",
       "notes": "agent: strong full-stack fit",
-      "pdf": "Figma/Name_..._Resume.pdf"        // relative to resumes/pdfs (added on build)
+      "pdf": "Figma/Name_..._Resume.pdf",       // relative to resumes/pdfs (added on build)
+      "jd_file": "agent/jds/2026-07-25-figma-3.txt"   // only when a JD was pasted
     }
   ]
 }
 ```
 
-`pdf_abs` (absolute path) is added by the API at read time, not persisted.
+`pdf_abs` (absolute path) and `jd_chars` (size of the pasted JD) are added by the API at
+read time, not persisted.
+
+**Pasted job descriptions.** When a posting cannot be fetched — a JS-only board, anything
+behind a login, or a JD forwarded by email — paste the text into the row (the **text**
+button in the JD column, or the *paste job description* box when adding). It is stored as a
+**sidecar file** under `agent/jds/<id>.txt` rather than inline, because `/api/jobs` returns
+every row on each poll and a JD is ~5KB. A row with a pasted JD needs no URL at all, and
+the agent prefers that text over re-fetching. Clearing the text reverts the row to
+fetching.
 
 ### Statuses (lifecycle)
 
@@ -457,8 +468,11 @@ to `resumes/pdfs/{Company}/`.
 `python3 agent/run.py` runs one pass over the queue:
 
 1. **Lock** — takes `agent/.lock` (flock) so two runs never overlap.
-2. **Load** — reads `job_queue.json`, keeps rows with `status == "queued"` (or `--only <url>`).
-3. **Fetch + screen (parallel, pool ≤ 8)** — for each row, `ats.fetch(url)` returns
+2. **Load** — reads `job_queue.json`, keeps `queued` rows that have something to work
+   from: a URL **or** a pasted job description (`--only` targets one URL *or* row id).
+3. **Fetch + screen (parallel, pool ≤ 8)** — a row with a **pasted JD** uses that text
+   directly (no HTTP: the user pasted it precisely because the URL could not be read);
+   otherwise `ats.fetch(url)` returns
    `{title, location, comp, text, removed}`; `screen.classify(job)` returns a verdict.
 4. **Route the non-builds (serialized in the parent):**
    - `HARD_DROP` → `update_queue.py --status dropped` + a LIBRARY history row. **No model call.**
@@ -575,6 +589,9 @@ themes. Features:
   status, coverage, notes) edits in place and autosaves per-row.
   - **Résumé column**: a **PDF** pill (opens the résumé in a new tab) and a **⧉ copy-path
     button** (copies the absolute on-disk path).
+  - **JD column**: the posting link plus a **text** button to paste a job description for
+    rows the fetcher cannot read. It shows the stored size once attached, and the agent then
+    uses that text instead of the URL. Rows added from a pasted JD need no URL at all.
   - **Actions column**: delete (×), and for `needs_review` rows, one-click **Build** (re-queue)
     / **Drop**.
   - **Resizable columns**: drag a column border to resize, double-click to reset one,
@@ -618,6 +635,8 @@ Served by `tracker/tracker.py` on `http://localhost:8765` (localhost-only).
 | GET | `/api/jobs` | all rows (+ `pdf`, `pdf_abs`, `rev`) |
 | POST | `/api/jobs` | create one row |
 | PATCH | `/api/jobs/<id>` | update named fields on one row |
+| GET | `/api/jobs/<id>/jd` | read the pasted job description for a row |
+| PATCH | `/api/jobs/<id>/jd` | attach/replace a pasted JD (`{text}`); empty text clears it |
 | DELETE | `/api/jobs/<id>` | delete one row |
 | GET | `/api/rev` | `{rev, count}` cheap change-poll (drives auto-refresh) |
 | GET | `/api/statuses` | the status list (drives the UI dropdowns) |
@@ -653,8 +672,8 @@ current state as JSON.
 
 ### `agent/ats.py`
 `fetch(url) → {title, location, comp, text, removed, source}`. Fast-path adapters for
-Greenhouse, Ashby, Lever, Workday, Oracle ORC, SmartRecruiters, Apple, Microsoft, Amazon,
-plus a **generic fallback** that sniffs an embedded ATS or extracts page text. Resolves
+Greenhouse, Ashby, Lever, Workday, **Workable**, Oracle ORC, SmartRecruiters, Apple,
+Microsoft, Amazon, plus a **generic fallback** that sniffs an embedded ATS or extracts page text. Resolves
 tricky company-domain `gh_jid` tokens by trying variants and never false-drops on an
 unresolved one (returns "unresolved" → NEEDS_REVIEW rather than "removed").
 

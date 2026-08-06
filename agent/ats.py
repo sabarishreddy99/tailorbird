@@ -6,10 +6,16 @@ All fetching happens here (urllib), never through a Claude tool, so the agent
 never triggers a permission prompt and new ATS hosts need no allow-listing.
 
 Fast paths mirror the "Company Research Shortcuts" in
-resumes/_index/LIBRARY.md: Greenhouse, Ashby, Lever, Workday, Oracle ORC,
-SmartRecruiters, Apple, Microsoft, Amazon. Anything else falls back to a
+resumes/_index/LIBRARY.md: Greenhouse, Ashby, Lever, Workday, Workable, Oracle
+ORC, SmartRecruiters, Apple, Microsoft, Amazon. Anything else falls back to a
 platform sniff (embedded Greenhouse/Ashby/Lever/Workday) and finally a plain
 GET + HTML-to-text extraction, so an unseen host still yields JD text.
+
+`removed` means the posting is GONE (an explicit 404/410, or a state the board
+itself reports as closed) - never merely that extraction came up thin. A
+JS-rendered board returns a near-empty shell with a 200, and treating that as
+"removed" hard-drops a live role and loses it silently; thin text is instead
+passed through so screen.classify() parks it as NEEDS_REVIEW for a human.
 
     from ats import fetch
     job = fetch(url)   # {title, location, comp, text, removed, source, url}
@@ -64,6 +70,18 @@ def strip_html(s):
     s = re.sub(r"[ \t]+", " ", s)
     s = re.sub(r"\n\s*\n+", "\n", s)
     return s.strip()
+
+
+def from_text(text, title="", location="", url="", source="pasted"):
+    """Build a job record from a job description the user supplied directly.
+
+    The escape hatch for postings the fetcher cannot read: JS-rendered boards,
+    anything behind a login, or a JD forwarded by email. Goes through the same
+    shape (and the same comp parsing) as a fetched one, so screening and
+    authoring cannot tell the difference.
+    """
+    return _result(strip_html(text or ""), title=title, location=location,
+                   source=source, url=url)
 
 
 def _result(text, title="", location="", source="generic", url="", removed=False):
@@ -190,6 +208,41 @@ def fetch_workday(url):
                    title=info.get("title", ""),
                    location=info.get("location", ""),
                    source=f"workday:{tenant}", url=url)
+
+
+# ------------------------------------------------------------------ Workable
+# Note: Workable is NOT Workday. Their posting pages are a JS shell (~7KB with no
+# description at all), so the generic fallback recovers only the <title> - and,
+# because that text is short, used to mark the role "removed" and hard-drop a live
+# posting. The SPA reads this public JSON API, so we read it directly.
+
+def fetch_workable(url):
+    m = (re.search(r"apply\.workable\.com/(?:accounts/)?([^/]+)/j/([A-Za-z0-9]+)", url)
+         or re.search(r"([a-z0-9-]+)\.workable\.com/(?:j|jobs)/([A-Za-z0-9]+)", url, re.I))
+    if not m:
+        return None
+    account, shortcode = m.group(1), m.group(2)
+    status, d = http_get(
+        f"https://apply.workable.com/api/v1/accounts/{account}/jobs/{shortcode}",
+        as_json=True, accept="application/json")
+    if status in (404, 410):
+        return _result("", source=f"workable:{account}", url=url, removed=True)
+    if status != 200 or not d:
+        return None
+    # A closed/draft posting still returns 200, so state is the real signal.
+    state = (d.get("state") or "").lower()
+    if state and state != "published":
+        return _result("", title=d.get("title", ""), source=f"workable:{account}",
+                       url=url, removed=True)
+    text = "\n\n".join(strip_html(d.get(k) or "")
+                       for k in ("description", "requirements", "benefits"))
+    loc = d.get("location") or {}
+    where = ", ".join(x for x in (loc.get("city"), loc.get("region"),
+                                  loc.get("country")) if x)
+    if d.get("remote"):
+        where = (where + " (remote)").strip()
+    return _result(text, title=d.get("title", ""), location=where,
+                   source=f"workable:{account}", url=url)
 
 
 # --------------------------------------------------------------- SmartRecruiters
@@ -320,15 +373,22 @@ def fetch_generic(url):
         if r:
             return r
     text = strip_html(body)
-    # Trim obvious nav/footer noise by keeping the densest middle if huge.
-    return _result(text[:20000], source="generic-html", url=url,
-                   removed=(len(text) < 200))
+    # Thin text means we could not EXTRACT the posting, not that the posting is
+    # gone - a JS-rendered board (Workable, many SPA careers pages) serves a
+    # near-empty shell with a 200. Claiming "removed" here hard-drops a live role
+    # and loses it silently; returning it thin lets screen.classify() route it to
+    # NEEDS_REVIEW ("fetch likely failed") for a human. Only an explicit 404/410
+    # above is treated as removed. Same rule as fetch_greenhouse's unresolved case.
+    return _result(text[:20000], source="generic-html", url=url, removed=False)
 
 
 ADAPTERS = [
     ("greenhouse", fetch_greenhouse),
     ("ashby", fetch_ashby),
     ("lever", fetch_lever),
+    # "workable" must precede "workday": the ADAPTERS loop matches by substring,
+    # and these two names are one letter apart on similar-looking URLs.
+    ("workable", fetch_workable),
     ("workday", fetch_workday),
     ("smartrecruiters", fetch_smartrecruiters),
     ("apple", fetch_apple),
@@ -359,6 +419,8 @@ if __name__ == "__main__":
     import sys
     for u in (sys.argv[1:] or [
         "https://job-boards.greenhouse.io/vestwell/jobs/7751400003",
+        # Workable: JS shell, so this only works via the JSON API adapter.
+        "https://apply.workable.com/pereview-software/j/2E60A27CFD",
     ]):
         j = fetch(u)
         print(f"[{j['source']}] removed={j['removed']} title={j['title']!r} "
